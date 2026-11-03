@@ -1,0 +1,72 @@
+{
+  "name": "homebridge-paperclip",
+  "displayName": "Paperclip",
+  "version": "0.2.0",
+  "description": "HomeKit control for Samsung air conditioners (WindFree and other SmartThings-connected models) with a built-in, no-terminal SmartThings setup wizard.",
+  "license": "Apache-2.0",
+  "author": "Cyrus Kakkar (https://github.com/ckakkar)",
+  "homepage": "https://github.com/ckakkar/paperclip#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ckakkar/paperclip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ckakkar/paperclip/issues"
+  },
+  "funding": "https://github.com/sponsors/ckakkar",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "homebridge-paperclip": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "homebridge-ui",
+    "config.schema.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "engines": {
+    "node": "^22.12.0 || ^24.0.0 || ^26.0.0",
+    "homebridge": "^1.8.0 || ^2.0.0"
+  },
+  "scripts": {
+    "build": "rimraf ./dist && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "keywords": [
+    "homebridge-plugin",
+    "homebridge",
+    "homekit",
+    "samsung",
+    "smartthings",
+    "air conditioner",
+    "windfree",
+    "heatercooler",
+    "siri",
+    "homepod"
+  ],
+  "dependencies": {
+    "@homebridge/plugin-ui-utils": "^2.2.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@homebridge/hap-nodejs": "^2.3.0",
+    "@types/node": "^26.6.6",
+    "eslint": "^10.14.0",
+    "globals": "^17.14.0",
+    "homebridge": "^2.5.0",
+    "rimraf": "^6.1.3",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.1.0"
+  }
+}

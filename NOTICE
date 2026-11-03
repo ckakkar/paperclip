@@ -1,0 +1,22 @@
+Paperclip (homebridge-paperclip)
+Copyright 2026 Cyrus Kakkar
+
+This product is licensed under the Apache License, Version 2.0.
+
+Paperclip was written from scratch, but its design was informed by these
+Apache-2.0 licensed projects:
+
+  homebridge-samsung-windfree-ac
+  https://github.com/igorxmath/homebridge-samsung-windfree-ac
+  (Samsung SmartThings capability names, the inverted display-light command)
+
+  homebridge-smartthings-oauth
+  https://github.com/aziz66/homebridge-smartthings
+  (SmartThings OAuth flow through an https echo redirect)
+
+  homebridge-samsung-rac
+  https://github.com/Dean151/homebridge-samsung-rac
+  (HeaterCooler presentation of dry and fan-only modes)
+
+Samsung, SmartThings, WindFree, Apple, HomeKit and HomePod are trademarks of
+their respective owners. This project is not affiliated with or endorsed by them.

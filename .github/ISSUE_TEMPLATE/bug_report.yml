@@ -1,0 +1,35 @@
+name: Bug report
+description: Something isn't working with your air conditioner
+labels: [bug]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: AC model
+      placeholder: e.g. AR50H18D1ZHNNA
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Paperclip / Homebridge / Node versions
+      placeholder: e.g. 0.1.0 / 2.5.0 / 26.13.0
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Homebridge log (debug mode on)
+      render: text
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `npx homebridge-paperclip status`
+      description: Shows what your unit reports to SmartThings. Contains no passwords or tokens.
+      render: json
