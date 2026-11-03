@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.3.0 (2026-11-04)
+
+Closer to the Samsung SmartThings app's own page.
+
+- **Auto in the mode menu**: the Home app only lists Auto when an AC has both heating and cooling thresholds, so both are now present and mirror Samsung's single setpoint.
+- **Mode toggles with the AC**: Dry, Sleep, Quiet and Turbo sit under the dial again, with short names. Display, Beep, Auto Clean and the swing-axis switches move to a separate **Settings** accessory.
+- **Turbo only while cooling**: Samsung's Turbo (fast cooling) can only be turned on in Cool mode, and no mode toggle turns on while the AC is off. The Home app flips the switch back and the log says why. Changing the mode away from Cool turns the Turbo switch off right away.
+- The AC's control is named after the unit instead of the Home app's generic "Heater-Cooler".
+
 ## 0.2.0 (2026-11-04)
 
 Built from what a real 2025 Samsung split AC (SmartThings model DA-AC-RAC-01011, sold in India) reports to SmartThings.

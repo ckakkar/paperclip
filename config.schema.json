@@ -55,13 +55,13 @@
             "longWind"
           ]
         },
-        "description": "Only the modes your AC supports appear. Mode switches sit on a separate \"Modes\" accessory, so the AC's own tile stays clean."
+        "description": "Shown under the AC's dial, like the Samsung app. Only modes your AC supports appear. Turbo only turns on while the AC is cooling, and none of them turn on while it's off."
       },
       "dryModeSwitch": {
         "title": "Dry (dehumidify) switch",
         "type": "boolean",
         "default": true,
-        "description": "HomeKit has no dry mode, so it gets its own switch. Turning it off returns the AC to its previous mode."
+        "description": "Apple's mode menu can only hold Off, Cool, Auto and Heat, so Dry sits under the dial instead. Turning it off returns to the previous mode."
       },
       "fanModeSwitch": {
         "title": "Fan Only switch",
@@ -79,7 +79,7 @@
         "title": "Display light switch",
         "type": "boolean",
         "default": false,
-        "description": "Turns the temperature display on the indoor unit on or off."
+        "description": "On the separate Settings accessory, with Beep and Auto Clean."
       },
       "autoCleanSwitch": {
         "title": "Auto Clean switch",
@@ -127,7 +127,7 @@
         "title": "Swing Up/Down and Swing Left/Right switches",
         "type": "boolean",
         "default": false,
-        "description": "Separate up/down and left/right switches on the Modes accessory. The Fan's Oscillate toggle uses the direction chosen above."
+        "description": "Separate up/down and left/right switches on the Settings accessory. The Fan's Oscillate toggle uses the direction chosen above."
       },
       "excludeDevices": {
         "title": "Hide these air conditioners",

@@ -57,6 +57,8 @@ export interface AcState {
   swingVertical?: boolean;
   swingHorizontal?: boolean;
   optionalMode?: string;
+  /** Optional modes the unit says it accepts right now (it changes with the AC mode on some units). */
+  availableOptionalModes?: string[];
   autoClean?: boolean;
   lighting?: boolean;
   beep?: boolean;
@@ -286,6 +288,11 @@ export function parseState(status: DeviceStatus, profile: AcProfile): AcState {
   const optionalMode = readValue(main, CAP.optionalMode, 'acOptionalMode');
   if (typeof optionalMode === 'string' && optionalMode !== '') {
     state.optionalMode = optionalMode;
+  }
+
+  const available = stringList(readValue(main, CAP.optionalMode, 'availableAcOptionalMode'));
+  if (available.length) {
+    state.availableOptionalModes = available;
   }
 
   state.autoClean = onOff(readValue(main, CAP.autoClean, 'autoCleaningMode'));

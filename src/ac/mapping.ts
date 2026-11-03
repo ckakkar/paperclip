@@ -114,6 +114,39 @@ export function currentHeaterCoolerState(state: AcState, profile: AcProfile): nu
 }
 
 // -----------------------------------------------------------------------------
+// Samsung optional modes
+// -----------------------------------------------------------------------------
+
+/** AC modes each optional mode runs in, when the unit doesn't say. Turbo (Samsung "speed") is a cooling boost. */
+const OPTIONAL_MODE_RULES: Record<string, string[]> = {
+  speed: COOL_MODES,
+};
+
+/** Why an optional mode can't be turned on right now, or undefined if it can. */
+export function optionalModeBlocker(optionalMode: string, state: Pick<AcState, 'power' | 'mode' | 'availableOptionalModes'>): string | undefined {
+  if (state.power !== true) {
+    return 'only works while the AC is on';
+  }
+  const rule = OPTIONAL_MODE_RULES[optionalMode];
+  if (rule && !(state.mode && rule.includes(state.mode))) {
+    return 'only works in Cool mode';
+  }
+  if (state.availableOptionalModes?.length && !state.availableOptionalModes.includes(optionalMode)) {
+    return `isn't available in ${state.mode ?? 'this'} mode`;
+  }
+  return undefined;
+}
+
+/** True when switching to `mode` makes the unit drop `optionalMode` (so the switch can turn off at once). */
+export function optionalModeEndsWith(optionalMode: string | undefined, mode: string): boolean {
+  if (!optionalMode || optionalMode === 'off') {
+    return false;
+  }
+  const rule = OPTIONAL_MODE_RULES[optionalMode];
+  return Boolean(rule && !rule.includes(mode)) || FAN_ONLY_MODES.includes(mode);
+}
+
+// -----------------------------------------------------------------------------
 // Fan speed
 // -----------------------------------------------------------------------------
 
