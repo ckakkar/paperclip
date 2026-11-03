@@ -33,7 +33,7 @@
     "homebridge": "^1.8.0 || ^2.0.0"
   },
   "scripts": {
-    "build": "rimraf ./dist && tsc -p tsconfig.build.json",
+    "build": "rimraf ./dist && tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
