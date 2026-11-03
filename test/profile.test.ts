@@ -5,15 +5,17 @@ import {
   TargetState,
   clampSetpoint,
   currentHeaterCoolerState,
+  fanLevels,
   fanModeToSpeed,
   modeToTargetState,
   speedToFanMode,
-  swingToOscillation,
+  swingCommands,
+  swingFor,
   targetStateToMode,
   validTargetStates,
 } from '../src/ac/mapping.js';
 import { buildProfile, describeProfile, isAirConditioner, orderFanModes, parseState } from '../src/ac/profile.js';
-import { windFreeDevice, windFreeStatus } from './fixtures.js';
+import { rac01011Device, rac01011Status, windFreeDevice, windFreeStatus } from './fixtures.js';
 
 describe('profile', () => {
   const profile = buildProfile(windFreeDevice(), windFreeStatus());
@@ -27,6 +29,7 @@ describe('profile', () => {
     expect(profile.modes).toEqual(['cool', 'dry', 'wind', 'auto']);
     expect(profile.fanModes).toEqual(['auto', 'low', 'medium', 'high', 'turbo']);
     expect(profile.oscillationModes).toEqual(['fixed', 'all', 'vertical', 'horizontal']);
+    expect(profile.swing).toEqual({ source: 'oscillation', vertical: true, horizontal: true });
     expect(profile.optionalModes).toContain('windFree');
     expect(profile.setpoint).toEqual({ min: 16, max: 30, step: 1 });
     expect(describeProfile(profile)).toContain('range: 16–30 °C');
@@ -41,7 +44,7 @@ describe('profile', () => {
   it('parses the current state', () => {
     expect(parseState(windFreeStatus(), profile)).toEqual({
       power: false, mode: 'cool', currentTemperature: 29, targetTemperature: 24, humidity: 58,
-      fanMode: 'auto', oscillation: 'fixed', optionalMode: 'off', autoClean: true, lighting: true,
+      fanMode: 'auto', swingVertical: false, swingHorizontal: false, optionalMode: 'off', autoClean: true, lighting: true,
     });
   });
 
@@ -65,6 +68,20 @@ describe('profile', () => {
     const bare = buildProfile(windFreeDevice(), { components: { main: {} } });
     expect(bare.modes).toEqual(['cool', 'dry', 'wind', 'auto']);
     expect(bare.setpoint).toEqual({ min: 16, max: 30, step: 1 });
+  });
+
+  it('reads a 2025 unit that swings through the air-flow capability', () => {
+    const rac = buildProfile(rac01011Device(), rac01011Status());
+    expect(rac.modes).toEqual(['auto', 'cool', 'dry', 'fan']);
+    expect(rac.swing).toEqual({ source: 'airFlow', vertical: true, horizontal: true });
+    expect(rac.capabilities.has('relativeHumidityMeasurement')).toBe(false);
+    expect(rac.optionalModes).toEqual(['off', 'sleep', 'quiet', 'speed']);
+    expect(describeProfile(rac)).toContain('swing: up/down + left/right');
+    const state = parseState(rac01011Status({
+      'samsungce.airConditionerAirFlowDirection': { verticalDirection: { value: 'swing' }, horizontalDirection: { value: 'fixed' } },
+    }), rac);
+    expect(state).toMatchObject({ swingVertical: true, swingHorizontal: false, beep: true, filterUsage: 77, filterStatus: 'normal', fanMode: 'low' });
+    expect(state.humidity).toBeUndefined();
   });
 
   it('orders fan speeds slowest first', () => {
@@ -102,22 +119,50 @@ describe('HomeKit mapping', () => {
   });
 
   it('maps fan speeds to slider steps and back without using zero', () => {
-    expect(profile.fanModes.map(m => fanModeToSpeed(m, profile))).toEqual([20, 40, 60, 80, 100]);
-    for (const mode of profile.fanModes) {
-      expect(speedToFanMode(fanModeToSpeed(mode, profile), profile)).toBe(mode);
+    const withAuto = fanLevels(profile, true);
+    expect(withAuto.map(m => fanModeToSpeed(m, withAuto))).toEqual([20, 40, 60, 80, 100]);
+    for (const mode of withAuto) {
+      expect(speedToFanMode(fanModeToSpeed(mode, withAuto), withAuto)).toBe(mode);
     }
-    expect(speedToFanMode(0, profile)).toBeUndefined();
-    expect(speedToFanMode(1, profile)).toBe('auto');
-    expect(speedToFanMode(55, profile)).toBe('medium');
+    expect(speedToFanMode(0, withAuto)).toBeUndefined();
+    expect(speedToFanMode(1, withAuto)).toBe('auto');
+    expect(speedToFanMode(55, withAuto)).toBe('medium');
 
-    const three = { ...profile, fanModes: ['low', 'medium', 'high'] };
-    expect(three.fanModes.map(m => speedToFanMode(fanModeToSpeed(m, three), three))).toEqual(three.fanModes);
+    const manual = fanLevels(profile, false);
+    expect(manual).toEqual(['low', 'medium', 'high', 'turbo']);
+    expect(manual.map(m => fanModeToSpeed(m, manual))).toEqual([25, 50, 75, 100]);
+    expect(speedToFanMode(100, manual)).toBe('turbo');
+
+    const three = ['low', 'medium', 'high'];
+    expect(three.map(m => speedToFanMode(fanModeToSpeed(m, three), three))).toEqual(three);
   });
 
-  it('maps swing to the preferred direction', () => {
-    expect(swingToOscillation(true, profile, 'vertical')).toBe('vertical');
-    expect(swingToOscillation(true, { ...profile, oscillationModes: ['fixed', 'horizontal'] }, 'all')).toBe('horizontal');
-    expect(swingToOscillation(false, profile, 'all')).toBe('fixed');
+  it('maps the Oscillate toggle to the preferred swing direction', () => {
+    expect(swingFor(true, 'all', profile)).toEqual({ vertical: true, horizontal: true });
+    expect(swingFor(true, 'vertical', profile)).toEqual({ vertical: true, horizontal: false });
+    expect(swingFor(false, 'all', profile)).toEqual({ vertical: false, horizontal: false });
+    const leftRightOnly = { ...profile, swing: { source: 'airFlow' as const, vertical: false, horizontal: true } };
+    expect(swingFor(true, 'vertical', leftRightOnly)).toEqual({ vertical: false, horizontal: true });
+  });
+
+  it('turns a swing wish into the right SmartThings commands', () => {
+    expect(swingCommands({ vertical: true, horizontal: false }, profile))
+      .toEqual([{ capability: 'fanOscillationMode', command: 'setFanOscillationMode', arguments: ['vertical'] }]);
+    expect(swingCommands({ vertical: false, horizontal: false }, profile)[0].arguments).toEqual(['fixed']);
+    const onlyAll = { ...profile, oscillationModes: ['fixed', 'all'] };
+    expect(swingCommands({ vertical: true, horizontal: false }, onlyAll)[0].arguments).toEqual(['all']);
+
+    const rac = buildProfile(rac01011Device(), rac01011Status());
+    expect(swingCommands({ vertical: true, horizontal: false }, rac)).toEqual([
+      { capability: 'samsungce.airConditionerAirFlowDirection', command: 'setVerticalDirection', arguments: ['swing'] },
+      { capability: 'samsungce.airConditionerAirFlowDirection', command: 'setHorizontalDirection', arguments: ['fixed'] },
+    ]);
+  });
+
+  it('recognises "fan" as fan-only mode', () => {
+    const rac = buildProfile(rac01011Device(), rac01011Status());
+    expect(modeToTargetState('fan', rac)).toBe(TargetState.AUTO);
+    expect(currentHeaterCoolerState({ power: true, mode: 'fan' }, rac)).toBe(CurrentState.IDLE);
   });
 
   it('clamps and rounds setpoints to what the unit accepts', () => {

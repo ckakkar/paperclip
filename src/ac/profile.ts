@@ -8,10 +8,15 @@ export const CAP = {
   temperature: 'temperatureMeasurement',
   humidity: 'relativeHumidityMeasurement',
   fanMode: 'airConditionerFanMode',
+  /** Older swing control: one attribute, fixed/all/vertical/horizontal. */
   oscillation: 'fanOscillationMode',
+  /** Newer swing control (2023+ units): separate up/down and left/right swing. */
+  airFlow: 'samsungce.airConditionerAirFlowDirection',
   optionalMode: 'custom.airConditionerOptionalMode',
   autoClean: 'custom.autoCleaningMode',
   lighting: 'samsungce.airConditionerLighting',
+  beep: 'samsungce.airConditionerBeep',
+  dustFilter: 'custom.dustFilter',
   execute: 'execute',
   setpointControl: 'custom.thermostatSetpointControl',
   disabled: 'custom.disabledCapabilities',
@@ -19,13 +24,22 @@ export const CAP = {
 
 export type TemperatureUnit = 'C' | 'F';
 
-/** What a particular unit can do. Built once at discovery, refreshed when the device reports new lists. */
+export interface SwingSupport {
+  /** Which capability drives swing, or null when the unit has none. */
+  source: 'airFlow' | 'oscillation' | null;
+  vertical: boolean;
+  horizontal: boolean;
+}
+
+/** What a particular unit can do. Built once at discovery. */
 export interface AcProfile {
   /** Capabilities on the main component, minus the ones the unit marks as disabled. */
   capabilities: Set<string>;
   modes: string[];
+  /** Fan speeds, slowest first, including "auto" when the unit has it. */
   fanModes: string[];
   oscillationModes: string[];
+  swing: SwingSupport;
   optionalModes: string[];
   unit: TemperatureUnit;
   /** Target temperature range in °C (HomeKit only speaks Celsius). */
@@ -40,15 +54,20 @@ export interface AcState {
   targetTemperature?: number;
   humidity?: number;
   fanMode?: string;
-  oscillation?: string;
+  swingVertical?: boolean;
+  swingHorizontal?: boolean;
   optionalMode?: string;
   autoClean?: boolean;
   lighting?: boolean;
+  beep?: boolean;
+  /** Percent of the filter's life used up (0–100). */
+  filterUsage?: number;
+  filterStatus?: string;
 }
 
 const REQUIRED = [CAP.switch, CAP.mode];
 
-/** Default modes for a unit that does not report a list (cooling-only, like most WindFree units sold in India). */
+/** Default modes for a unit that does not report a list (cooling-only, like most units sold in India). */
 const FALLBACK_MODES = ['cool', 'dry', 'wind', 'auto'];
 const FALLBACK_FAN_MODES = ['auto', 'low', 'medium', 'high', 'turbo'];
 
@@ -99,10 +118,6 @@ export function fromCelsius(value: number, unit: TemperatureUnit): number {
   return unit === 'F' ? value * 9 / 5 + 32 : value;
 }
 
-export function roundTo(value: number, step: number): number {
-  return Math.round(value / step) * step;
-}
-
 export function orderFanModes(modes: string[]): string[] {
   const known = FAN_ORDER.filter(m => modes.includes(m));
   const unknown = modes.filter(m => !FAN_ORDER.includes(m));
@@ -145,7 +160,38 @@ export function buildProfile(device: Device, status: DeviceStatus): AcProfile {
     ? stringList(readValue(main, CAP.optionalMode, 'supportedAcOptionalMode'))
     : [];
 
-  return { capabilities, modes, fanModes, oscillationModes, optionalModes, unit, setpoint: setpointRange(main, unit) };
+  return {
+    capabilities,
+    modes,
+    fanModes,
+    oscillationModes,
+    swing: swingSupport(main, capabilities, oscillationModes),
+    optionalModes,
+    unit,
+    setpoint: setpointRange(main, unit),
+  };
+}
+
+function swingSupport(main: ComponentStatus, capabilities: Set<string>, oscillationModes: string[]): SwingSupport {
+  if (capabilities.has(CAP.airFlow)) {
+    const vertical = stringList(readValue(main, CAP.airFlow, 'supportedVerticalDirections'));
+    const horizontal = stringList(readValue(main, CAP.airFlow, 'supportedHorizontalDirections'));
+    // A missing list means the unit didn't say; assume the axis exists when its current value is reported.
+    const v = vertical.length ? vertical.includes('swing') : readValue(main, CAP.airFlow, 'verticalDirection') !== undefined;
+    const h = horizontal.length ? horizontal.includes('swing') : readValue(main, CAP.airFlow, 'horizontalDirection') !== undefined;
+    if (v || h) {
+      return { source: 'airFlow', vertical: v, horizontal: h };
+    }
+  }
+  if (oscillationModes.some(m => m !== 'fixed')) {
+    const all = oscillationModes.includes('all');
+    return {
+      source: 'oscillation',
+      vertical: all || oscillationModes.includes('vertical'),
+      horizontal: all || oscillationModes.includes('horizontal'),
+    };
+  }
+  return { source: null, vertical: false, horizontal: false };
 }
 
 function setpointRange(main: ComponentStatus, unit: TemperatureUnit): AcProfile['setpoint'] {
@@ -182,31 +228,33 @@ function setpointRange(main: ComponentStatus, unit: TemperatureUnit): AcProfile[
   return { min: Math.floor(minC / stepC) * stepC, max: Math.ceil(maxC / stepC) * stepC, step: stepC };
 }
 
+function readTemperature(main: ComponentStatus, capability: string, attribute: string, fallback: TemperatureUnit): number | undefined {
+  const value = readValue(main, capability, attribute);
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const reported = readUnit(main, capability, attribute);
+  const unit: TemperatureUnit = reported === 'F' ? 'F' : reported === 'C' ? 'C' : fallback;
+  return Math.round(toCelsius(value, unit) * 10) / 10;
+}
+
+function onOff(value: unknown): boolean | undefined {
+  return value === 'on' ? true : value === 'off' ? false : undefined;
+}
+
 export function parseState(status: DeviceStatus, profile: AcProfile): AcState {
   const main = mainStatus(status);
   const state: AcState = {};
 
-  const power = readValue(main, CAP.switch, 'switch');
-  if (power === 'on' || power === 'off') {
-    state.power = power === 'on';
-  }
+  state.power = onOff(readValue(main, CAP.switch, 'switch'));
 
   const mode = readValue(main, CAP.mode, 'airConditionerMode');
   if (typeof mode === 'string' && mode !== '' && mode !== 'notSupported') {
     state.mode = mode;
   }
 
-  const temp = readValue(main, CAP.temperature, 'temperature');
-  if (typeof temp === 'number' && Number.isFinite(temp)) {
-    const unit = readUnit(main, CAP.temperature, 'temperature') === 'F' ? 'F' : readUnit(main, CAP.temperature, 'temperature') === 'C' ? 'C' : profile.unit;
-    state.currentTemperature = Math.round(toCelsius(temp, unit) * 10) / 10;
-  }
-
-  const setpoint = readValue(main, CAP.coolingSetpoint, 'coolingSetpoint');
-  if (typeof setpoint === 'number' && Number.isFinite(setpoint)) {
-    const unit = readUnit(main, CAP.coolingSetpoint, 'coolingSetpoint') === 'F' ? 'F' : readUnit(main, CAP.coolingSetpoint, 'coolingSetpoint') === 'C' ? 'C' : profile.unit;
-    state.targetTemperature = Math.round(toCelsius(setpoint, unit) * 10) / 10;
-  }
+  state.currentTemperature = readTemperature(main, CAP.temperature, 'temperature', profile.unit);
+  state.targetTemperature = readTemperature(main, CAP.coolingSetpoint, 'coolingSetpoint', profile.unit);
 
   const humidity = readValue(main, CAP.humidity, 'humidity');
   if (typeof humidity === 'number' && Number.isFinite(humidity)) {
@@ -218,9 +266,21 @@ export function parseState(status: DeviceStatus, profile: AcProfile): AcState {
     state.fanMode = fanMode;
   }
 
-  const oscillation = readValue(main, CAP.oscillation, 'fanOscillationMode');
-  if (typeof oscillation === 'string' && oscillation !== '') {
-    state.oscillation = oscillation;
+  if (profile.swing.source === 'airFlow') {
+    const v = readValue(main, CAP.airFlow, 'verticalDirection');
+    const h = readValue(main, CAP.airFlow, 'horizontalDirection');
+    if (typeof v === 'string') {
+      state.swingVertical = v === 'swing';
+    }
+    if (typeof h === 'string') {
+      state.swingHorizontal = h === 'swing';
+    }
+  } else if (profile.swing.source === 'oscillation') {
+    const oscillation = readValue(main, CAP.oscillation, 'fanOscillationMode');
+    if (typeof oscillation === 'string' && oscillation !== '') {
+      state.swingVertical = oscillation === 'all' || oscillation === 'vertical';
+      state.swingHorizontal = oscillation === 'all' || oscillation === 'horizontal';
+    }
   }
 
   const optionalMode = readValue(main, CAP.optionalMode, 'acOptionalMode');
@@ -228,25 +288,31 @@ export function parseState(status: DeviceStatus, profile: AcProfile): AcState {
     state.optionalMode = optionalMode;
   }
 
-  const autoClean = readValue(main, CAP.autoClean, 'autoCleaningMode');
-  if (autoClean === 'on' || autoClean === 'off') {
-    state.autoClean = autoClean === 'on';
+  state.autoClean = onOff(readValue(main, CAP.autoClean, 'autoCleaningMode'));
+  state.lighting = onOff(readValue(main, CAP.lighting, 'lighting'));
+  state.beep = onOff(readValue(main, CAP.beep, 'beep'));
+
+  const usage = readValue(main, CAP.dustFilter, 'dustFilterUsage');
+  if (typeof usage === 'number' && Number.isFinite(usage)) {
+    state.filterUsage = Math.min(100, Math.max(0, usage));
+  }
+  const filterStatus = readValue(main, CAP.dustFilter, 'dustFilterStatus');
+  if (typeof filterStatus === 'string') {
+    state.filterStatus = filterStatus;
   }
 
-  const lighting = readValue(main, CAP.lighting, 'lighting');
-  if (lighting === 'on' || lighting === 'off') {
-    state.lighting = lighting === 'on';
-  }
-
-  return state;
+  return Object.fromEntries(Object.entries(state).filter(([, v]) => v !== undefined)) as AcState;
 }
 
 /** One-line summary for logs and the setup UI. */
 export function describeProfile(profile: AcProfile): string {
+  const swing = profile.swing.source
+    ? `swing: ${[profile.swing.vertical && 'up/down', profile.swing.horizontal && 'left/right'].filter(Boolean).join(' + ')}`
+    : 'no swing';
   const parts = [
     `modes: ${profile.modes.join('/') || 'unknown'}`,
     profile.fanModes.length ? `fan: ${profile.fanModes.join('/')}` : 'no fan speeds',
-    profile.oscillationModes.length ? `swing: ${profile.oscillationModes.join('/')}` : 'no swing',
+    swing,
     profile.optionalModes.length ? `extras: ${profile.optionalModes.filter(m => m !== 'off').join('/')}` : 'no extra modes',
     `range: ${profile.setpoint.min}–${profile.setpoint.max} °C`,
     `unit: °${profile.unit}`,

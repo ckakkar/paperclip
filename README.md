@@ -9,8 +9,8 @@ air conditioners in Apple Home. It works with WindFree and other models you alre
 SmartThings app. You can then use the Home app, Control Center, Siri and a HomePod, with automations
 and away-from-home control through your home hub.
 
-It was written for a Samsung **AR50H18D1ZHNNA** (1.5 t WindFree split AC, sold in India) and works with
-any Samsung room AC that shows up in SmartThings.
+It was written for, and tested on, a Samsung **AR50H18D1ZHNNA** (1.5 t split AC sold in India, SmartThings
+model `DA-AC-RAC-01011`). It works with any Samsung room AC that shows up in SmartThings.
 
 ```
 iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi…) ──HTTPS──▶ SmartThings ──▶ Samsung AC
@@ -24,12 +24,14 @@ iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi�
 | Cool · Auto (· Heat on heat pumps) | AC mode, limited to the modes your unit reports |
 | Target temperature | Set point, using your unit's own range (16–30 °C on most models) |
 | Current temperature | Indoor temperature sensor |
-| Fan speed slider | Auto → Low → Medium → High → Turbo (the lowest step is Auto) |
-| Oscillate | Swing (all directions by default; up/down or left/right in the settings) |
-| Humidity sensor | Indoor humidity, if the unit measures it |
-| **WindFree** switch | WindFree mode. Sleep, Quiet, Fast Cool and others are optional |
+| **Fan** tile | Low → Medium → High → Turbo, plus an **Auto** toggle |
+| Oscillate | Swing, both directions by default (up/down only or left/right only in the settings) |
+| **Swing Up/Down**, **Swing Left/Right** switches | Each swing direction on its own, on units that have both |
+| **Sleep**, **Quiet**, **Turbo**, **WindFree**… switches | Samsung's optional modes. You get whichever ones your unit supports, and only one runs at a time |
 | **Dry** switch | Dehumidify. Turning it off returns the AC to its previous mode |
-| Fan Only, Display, Auto Clean switches | Optional, off by default |
+| **Filter** | Filter life left, and an alert when it needs cleaning |
+| Humidity sensor | Indoor humidity, if the unit measures it |
+| Fan Only, Display, Beep, Auto Clean switches | Optional |
 
 Paperclip only adds a control when your AC actually reports it, so you don't get tiles that always say "No Response".
 
@@ -114,7 +116,11 @@ All of these are in the settings page below the connection steps. Defaults are i
 | Key | | |
 |---|---|---|
 | `pollInterval` | `20` | Seconds between status refreshes (10–600). Commands are always sent immediately. |
-| `optionalModeSwitches` | `["windFree"]` | Samsung extra modes as switches: `windFree`, `windFreeSleep`, `sleep`, `quiet`, `speed`, `smart`, `comfort`, `longWind`. |
+| `optionalModeSwitches` | all | Samsung modes as switches: `windFree`, `windFreeSleep`, `sleep`, `quiet`, `speed` (Turbo), `smart`, `comfort`, `longWind`. Only supported ones appear. |
+| `fanTile` | `true` | Separate Fan tile with a speed slider and an Auto toggle. |
+| `swingDirectionSwitches` | `true` | Swing Up/Down and Swing Left/Right switches. |
+| `filterStatus` | `true` | Filter life and cleaning alert. |
+| `beepSwitch` | `false` | Turn the indoor unit's beep on or off. |
 | `dryModeSwitch` | `true` | Dry (dehumidify) switch. |
 | `fanModeSwitch` | `false` | Fan-only switch. |
 | `humiditySensor` | `true` | Humidity sensor tile. |
@@ -155,7 +161,8 @@ Add `-U <path>` if your Homebridge storage folder isn't `~/.homebridge`.
 | Step 1 says the token is missing permissions | Make a new token with *every* scope ticked, or use the CLI route above. |
 | The tile says "No Response" | SmartThings or your internet was unreachable for three refreshes in a row. It recovers by itself. Check that the AC is online in the SmartThings app. |
 | Changes take a few seconds to show | Paperclip shows your change immediately, then confirms it with SmartThings about 3 s later. Changes made on the remote show up within `pollInterval`. |
-| WindFree turns itself off | Samsung only allows WindFree in Cool (and sometimes Auto) mode, so changing the mode cancels it. |
+| WindFree, Sleep or Turbo turns itself off | Samsung only allows these in some modes (usually Cool), so changing the mode cancels them. Only one can be on at a time. |
+| "Turbo" appears twice | **Turbo switch** = Samsung's fast-cooling mode. **Turbo fan speed** = the top of the Fan tile's slider. They're separate settings on the AC too. |
 
 Run Homebridge in debug mode (`-D`, or the *Debug* toggle in the UI) to log every SmartThings request.
 

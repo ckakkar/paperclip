@@ -1,4 +1,5 @@
-import type { AcProfile, AcState } from './profile.js';
+import type { Command } from '../smartthings/client.js';
+import { CAP, type AcProfile, type AcState } from './profile.js';
 
 /** HomeKit HeaterCooler values, kept here so the mapping is testable without HAP. */
 export const TargetState = { AUTO: 0, HEAT: 1, COOL: 2 } as const;
@@ -8,7 +9,8 @@ const COOL_MODES = ['cool', 'coolClean'];
 const HEAT_MODES = ['heat', 'heatClean'];
 const AUTO_MODES = ['auto', 'aIComfort'];
 export const DRY_MODES = ['dry', 'dryClean'];
-export const FAN_ONLY_MODES = ['wind', 'fanOnly'];
+/** Samsung uses all three names for fan-only, depending on the model. */
+export const FAN_ONLY_MODES = ['wind', 'fan', 'fanOnly'];
 
 function pick(profile: AcProfile, candidates: string[]): string | undefined {
   return candidates.find(m => profile.modes.includes(m));
@@ -56,7 +58,7 @@ export function isSpecialMode(mode: string | undefined): boolean {
 
 export function modeToTargetState(mode: string | undefined, profile: AcProfile): number {
   const valid = validTargetStates(profile);
-  let state: number | undefined;
+  let state: number;
   if (mode && COOL_MODES.includes(mode)) {
     state = TargetState.COOL;
   } else if (mode && HEAT_MODES.includes(mode)) {
@@ -111,51 +113,120 @@ export function currentHeaterCoolerState(state: AcState, profile: AcProfile): nu
   return CurrentState.IDLE;
 }
 
-/**
- * Fan speeds become evenly spaced RotationSpeed steps, slowest first, with Auto (when the
- * unit has it) as the lowest step. Zero is never used for a speed, because the Home app
- * turns the accessory off when the slider reaches zero.
- */
-export function fanSpeedStep(profile: AcProfile): number {
-  return profile.fanModes.length > 0 ? 100 / profile.fanModes.length : 100;
+// -----------------------------------------------------------------------------
+// Fan speed
+// -----------------------------------------------------------------------------
+
+export function hasAutoFan(profile: AcProfile): boolean {
+  return profile.fanModes.includes('auto');
 }
 
-export function fanModeToSpeed(fanMode: string | undefined, profile: AcProfile): number {
-  const levels = profile.fanModes;
+/** Speeds the slider can pick, slowest first. Auto is left out when a separate Auto toggle exists. */
+export function fanLevels(profile: AcProfile, includeAuto: boolean): string[] {
+  return includeAuto ? profile.fanModes : profile.fanModes.filter(m => m !== 'auto');
+}
+
+/**
+ * Speeds become evenly spaced RotationSpeed steps, slowest first. Zero is never used for a
+ * speed, because the Home app turns the accessory off when the slider reaches zero.
+ */
+export function fanSpeedStep(levels: string[]): number {
+  return levels.length > 0 ? 100 / levels.length : 100;
+}
+
+export function fanModeToSpeed(fanMode: string | undefined, levels: string[]): number {
   if (levels.length === 0) {
     return 100;
   }
   const index = fanMode ? levels.indexOf(fanMode) : -1;
-  const position = index === -1 ? 0 : index;
-  return round2((position + 1) * fanSpeedStep(profile));
+  return round2((Math.max(0, index) + 1) * fanSpeedStep(levels));
 }
 
-export function speedToFanMode(speed: number, profile: AcProfile): string | undefined {
-  const levels = profile.fanModes;
+export function speedToFanMode(speed: number, levels: string[]): string | undefined {
   if (levels.length === 0 || !(speed > 0)) {
     return undefined;
   }
   // Nearest step: HomeKit snaps the slider to minStep, but floats like 66.67 must not tip into the next speed.
-  const index = Math.min(levels.length - 1, Math.max(0, Math.round(speed / fanSpeedStep(profile)) - 1));
+  const index = Math.min(levels.length - 1, Math.max(0, Math.round(speed / fanSpeedStep(levels)) - 1));
   return levels[index];
 }
 
-export function isSwinging(oscillation: string | undefined): boolean {
-  return oscillation !== undefined && oscillation !== 'fixed';
+/** The speed to fall back to when leaving Auto, or to show on the slider while in Auto. */
+export function defaultManualFan(profile: AcProfile): string | undefined {
+  const manual = fanLevels(profile, false);
+  return manual.includes('medium') ? 'medium' : manual[Math.floor((manual.length - 1) / 2)];
 }
 
-export function swingToOscillation(enabled: boolean, profile: AcProfile, preferred: string): string | undefined {
-  const modes = profile.oscillationModes;
+// -----------------------------------------------------------------------------
+// Swing
+// -----------------------------------------------------------------------------
+
+export interface SwingWish {
+  vertical: boolean;
+  horizontal: boolean;
+}
+
+export function isSwinging(state: AcState): boolean {
+  return state.swingVertical === true || state.swingHorizontal === true;
+}
+
+/** What turning the HomeKit "Oscillate" toggle on or off should mean for this unit. */
+export function swingFor(enabled: boolean, preference: 'all' | 'vertical' | 'horizontal', profile: AcProfile): SwingWish {
+  const { vertical, horizontal } = profile.swing;
   if (!enabled) {
-    return modes.includes('fixed') || modes.length === 0 ? 'fixed' : undefined;
+    return { vertical: false, horizontal: false };
   }
-  if (modes.includes(preferred)) {
-    return preferred;
+  if (preference === 'vertical' && vertical) {
+    return { vertical: true, horizontal: false };
   }
-  return ['all', 'vertical', 'horizontal'].find(m => modes.includes(m)) ?? modes.find(m => m !== 'fixed');
+  if (preference === 'horizontal' && horizontal) {
+    return { vertical: false, horizontal: true };
+  }
+  if (preference !== 'all') {
+    // The preferred axis is missing; swing the one the unit has.
+    return { vertical, horizontal: !vertical && horizontal };
+  }
+  return { vertical, horizontal };
 }
 
-/** Device-unit setpoint for a HomeKit (°C) value, clamped to the unit's range. */
+/** SmartThings commands that put the unit's swing into the wished state. */
+export function swingCommands(wish: SwingWish, profile: AcProfile): Command[] {
+  const { source, vertical, horizontal } = profile.swing;
+  if (source === 'airFlow') {
+    const commands: Command[] = [];
+    if (vertical) {
+      commands.push({ capability: CAP.airFlow, command: 'setVerticalDirection', arguments: [wish.vertical ? 'swing' : 'fixed'] });
+    }
+    if (horizontal) {
+      commands.push({ capability: CAP.airFlow, command: 'setHorizontalDirection', arguments: [wish.horizontal ? 'swing' : 'fixed'] });
+    }
+    return commands;
+  }
+  if (source === 'oscillation') {
+    const modes = profile.oscillationModes;
+    let mode: string | undefined;
+    if (wish.vertical && wish.horizontal) {
+      mode = 'all';
+    } else if (wish.vertical) {
+      mode = 'vertical';
+    } else if (wish.horizontal) {
+      mode = 'horizontal';
+    } else {
+      mode = 'fixed';
+    }
+    if (!modes.includes(mode)) {
+      mode = mode === 'fixed' ? undefined : modes.find(m => m !== 'fixed');
+    }
+    return mode ? [{ capability: CAP.oscillation, command: 'setFanOscillationMode', arguments: [mode] }] : [];
+  }
+  return [];
+}
+
+// -----------------------------------------------------------------------------
+// Temperature
+// -----------------------------------------------------------------------------
+
+/** HomeKit (°C) value clamped and rounded to what the unit accepts. */
 export function clampSetpoint(celsius: number, profile: AcProfile): number {
   const { min, max, step } = profile.setpoint;
   return Math.min(max, Math.max(min, Math.round(celsius / step) * step));

@@ -1,21 +1,26 @@
-import type { API, CharacteristicValue, PlatformAccessory, Service, WithUUID, Characteristic } from 'homebridge';
+import type { API, Characteristic, CharacteristicValue, PlatformAccessory, Service, WithUUID } from 'homebridge';
 
 import {
-  clampSetpoint,
   canHeat,
+  clampSetpoint,
+  coolMode,
   currentHeaterCoolerState,
+  defaultManualFan,
   dryMode,
+  fanLevels,
   fanModeToSpeed,
   fanOnlyMode,
   fanSpeedStep,
+  hasAutoFan,
   isSpecialMode,
   isSwinging,
   modeToTargetState,
-  coolMode,
   speedToFanMode,
-  swingToOscillation,
+  swingCommands,
+  swingFor,
   targetStateToMode,
   validTargetStates,
+  type SwingWish,
 } from './ac/mapping.js';
 import { CAP, fromCelsius, parseState, type AcProfile, type AcState } from './ac/profile.js';
 import { optionalModeLabel, type PaperclipConfig } from './config.js';
@@ -35,13 +40,30 @@ const REFRESH_AFTER_COMMAND_MS = 3_000;
 const FAILURES_BEFORE_UNREACHABLE = 3;
 const DEFAULT_RATE_LIMIT_BACKOFF_MS = 60_000;
 
+/** Subtypes of the services Paperclip adds next to the main HeaterCooler. */
+const SUBTYPE = {
+  humidity: 'humidity',
+  fanTile: 'fan-speed',
+  filter: 'filter',
+  dry: 'dry',
+  fanOnly: 'fan',
+  display: 'display',
+  autoClean: 'autoclean',
+  beep: 'beep',
+  swingVertical: 'swing-vertical',
+  swingHorizontal: 'swing-horizontal',
+  optionalMode: (mode: string) => `mode-${mode}`,
+} as const;
+
 export interface AccessoryContext {
   deviceId: string;
   label: string;
-  /** Mode to return to when the Dry or Fan switch is turned off. */
+  /** Mode to return to when the Dry or Fan Only switch is turned off. */
   modeBeforeSpecial?: string;
   /** Last display state we set, for units that never report it. */
   displayOn?: boolean;
+  /** Last manual fan speed, shown on the slider while the fan is on Auto. */
+  lastManualFan?: string;
 }
 
 export interface AccessoryDeps {
@@ -60,10 +82,17 @@ export class PaperclipAirConditioner {
   private readonly heaterCooler: Service;
   private readonly name: string;
 
+  /** Fan speeds on the AC tile's slider. Auto is included only when there is no Fan tile to hold an Auto toggle. */
+  private readonly coolerLevels: string[];
+  /** Fan speeds on the Fan tile's slider (never Auto; that is its own toggle). */
+  private readonly tileLevels: string[];
+
   private state: AcState;
   private readonly holds = new Map<keyof AcState, { value: unknown; until: number }>();
   private readonly extras: { service: Service; read: () => boolean | undefined }[] = [];
   private humidityService?: Service;
+  private fanService?: Service;
+  private filterService?: Service;
 
   private pending: Command[] = [];
   private waiters: Waiter[] = [];
@@ -88,12 +117,17 @@ export class PaperclipAirConditioner {
     this.name = device.label || device.name || 'Air Conditioner';
     this.state = parseState(initialStatus, profile);
 
+    const fanTile = deps.config.fanTile && profile.fanModes.length > 0;
+    this.tileLevels = fanTile ? fanLevels(profile, false) : [];
+    this.coolerLevels = fanLevels(profile, !(fanTile && hasAutoFan(profile)));
+
     accessory.context.deviceId = device.deviceId;
     accessory.context.label = this.name;
+    this.rememberManualFan();
 
     this.setupInformation();
     this.heaterCooler = this.setupHeaterCooler();
-    this.setupExtras();
+    this.setupExtras(fanTile);
     this.pushState();
   }
 
@@ -177,20 +211,14 @@ export class PaperclipAirConditioner {
       this.removeCharacteristic(service, C.HeatingThresholdTemperature);
     }
 
-    if (this.profile.fanModes.length > 0) {
-      const speed = service.getCharacteristic(C.RotationSpeed);
-      speed.updateValue(fanModeToSpeed(this.state.fanMode, this.profile));
-      speed.setProps({ minValue: 0, maxValue: 100, minStep: fanSpeedStep(this.profile) })
-        .onGet(() => this.read(fanModeToSpeed(this.state.fanMode, this.profile)))
-        .onSet(value => this.setRotationSpeed(value));
+    if (this.coolerLevels.length > 0) {
+      this.wireSpeed(service, this.coolerLevels);
     } else {
       this.removeCharacteristic(service, C.RotationSpeed);
     }
 
-    if (this.profile.oscillationModes.some(m => m !== 'fixed')) {
-      service.getCharacteristic(C.SwingMode)
-        .onGet(() => this.read(isSwinging(this.state.oscillation) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED))
-        .onSet(value => this.setSwing(value));
+    if (this.profile.swing.source) {
+      this.wireSwingMode(service);
     } else {
       this.removeCharacteristic(service, C.SwingMode);
     }
@@ -198,69 +226,147 @@ export class PaperclipAirConditioner {
     return service;
   }
 
-  private setupExtras(): void {
+  private setupExtras(fanTile: boolean): void {
     const cfg = this.deps.config;
     const caps = this.profile.capabilities;
+    const C = this.C;
     const keep = new Set<string>();
+
+    // Fan tile: speed slider, Auto toggle, swing.
+    if (fanTile) {
+      keep.add(SUBTYPE.fanTile);
+      const label = `${this.name} Fan`;
+      const fan = this.accessory.getServiceById(this.S.Fanv2, SUBTYPE.fanTile)
+        ?? this.accessory.addService(this.S.Fanv2, label, SUBTYPE.fanTile);
+      this.nameService(fan, label);
+      fan.getCharacteristic(C.Active)
+        .onGet(() => this.read(this.state.power ? C.Active.ACTIVE : C.Active.INACTIVE))
+        .onSet(value => this.setActive(value));
+      fan.getCharacteristic(C.CurrentFanState)
+        .onGet(() => this.read(this.state.power ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.INACTIVE));
+      if (hasAutoFan(this.profile)) {
+        fan.getCharacteristic(C.TargetFanState)
+          .onGet(() => this.read(this.state.fanMode === 'auto' ? C.TargetFanState.AUTO : C.TargetFanState.MANUAL))
+          .onSet(value => this.setFanAuto(Number(value) === C.TargetFanState.AUTO));
+      } else {
+        this.removeCharacteristic(fan, C.TargetFanState);
+      }
+      this.wireSpeed(fan, this.tileLevels);
+      if (this.profile.swing.source) {
+        this.wireSwingMode(fan);
+      } else {
+        this.removeCharacteristic(fan, C.SwingMode);
+      }
+      this.heaterCooler.addLinkedService(fan);
+      this.fanService = fan;
+    }
+
+    // Filter life and "clean the filter" alert.
+    if (cfg.filterStatus && caps.has(CAP.dustFilter)) {
+      keep.add(SUBTYPE.filter);
+      const label = `${this.name} Filter`;
+      const filter = this.accessory.getServiceById(this.S.FilterMaintenance, SUBTYPE.filter)
+        ?? this.accessory.addService(this.S.FilterMaintenance, label, SUBTYPE.filter);
+      this.nameService(filter, label);
+      filter.getCharacteristic(C.FilterChangeIndication).onGet(() => this.read(this.filterChange()));
+      filter.getCharacteristic(C.FilterLifeLevel).onGet(() => this.read(this.filterLife()));
+      filter.getCharacteristic(C.ResetFilterIndication).onSet(() =>
+        this.queue([{ capability: CAP.dustFilter, command: 'resetDustFilter' }], { filterUsage: 0, filterStatus: 'normal' }));
+      this.heaterCooler.addLinkedService(filter);
+      this.filterService = filter;
+    }
 
     // Humidity
     if (cfg.humiditySensor && caps.has(CAP.humidity)) {
-      keep.add('humidity');
-      this.humidityService = this.accessory.getServiceById(this.S.HumiditySensor, 'humidity')
-        ?? this.accessory.addService(this.S.HumiditySensor, `${this.name} Humidity`, 'humidity');
-      this.nameService(this.humidityService, `${this.name} Humidity`);
-      this.humidityService.getCharacteristic(this.C.CurrentRelativeHumidity)
+      keep.add(SUBTYPE.humidity);
+      const label = `${this.name} Humidity`;
+      this.humidityService = this.accessory.getServiceById(this.S.HumiditySensor, SUBTYPE.humidity)
+        ?? this.accessory.addService(this.S.HumiditySensor, label, SUBTYPE.humidity);
+      this.nameService(this.humidityService, label);
+      this.humidityService.getCharacteristic(C.CurrentRelativeHumidity)
         .onGet(() => this.read(this.state.humidity ?? 0));
     }
 
-    // Samsung optional modes (WindFree, Sleep, Quiet, Fast Cool…)
+    // Samsung optional modes (WindFree, Sleep, Quiet, Turbo…). The unit runs one at a time.
     for (const mode of cfg.optionalModeSwitches) {
       if (mode === 'off') {
         continue;
       }
       if (!this.profile.optionalModes.includes(mode)) {
-        this.deps.log.info(`${this.name}: "${mode}" is not one of this unit's modes (${this.profile.optionalModes.filter(m => m !== 'off').join(', ') || 'none'}); no switch added.`);
+        this.deps.log.debug(`${this.name}: no "${mode}" mode on this unit; no switch added.`);
         continue;
       }
-      this.addSwitch(`mode-${mode}`, optionalModeLabel(mode), keep,
+      this.addSwitch(SUBTYPE.optionalMode(mode), optionalModeLabel(mode), keep,
         () => this.state.power === true && this.state.optionalMode === mode,
         on => this.setOptionalMode(mode, on));
     }
 
     const dry = dryMode(this.profile);
     if (cfg.dryModeSwitch && dry) {
-      this.addSwitch('dry', 'Dry', keep,
+      this.addSwitch(SUBTYPE.dry, 'Dry', keep,
         () => this.state.power === true && this.state.mode === dry,
         on => this.setSpecialMode(dry, on));
     }
 
-    const fan = fanOnlyMode(this.profile);
-    if (cfg.fanModeSwitch && fan) {
-      this.addSwitch('fan', 'Fan Only', keep,
-        () => this.state.power === true && this.state.mode === fan,
-        on => this.setSpecialMode(fan, on));
+    const fanOnly = fanOnlyMode(this.profile);
+    if (cfg.fanModeSwitch && fanOnly) {
+      this.addSwitch(SUBTYPE.fanOnly, 'Fan Only', keep,
+        () => this.state.power === true && this.state.mode === fanOnly,
+        on => this.setSpecialMode(fanOnly, on));
+    }
+
+    const swing = this.profile.swing;
+    if (cfg.swingDirectionSwitches && swing.vertical && swing.horizontal) {
+      this.addSwitch(SUBTYPE.swingVertical, 'Swing Up/Down', keep,
+        () => this.state.swingVertical ?? false,
+        on => this.setSwing({ vertical: on, horizontal: this.state.swingHorizontal ?? false }, 'vertical'));
+      this.addSwitch(SUBTYPE.swingHorizontal, 'Swing Left/Right', keep,
+        () => this.state.swingHorizontal ?? false,
+        on => this.setSwing({ vertical: this.state.swingVertical ?? false, horizontal: on }, 'horizontal'));
     }
 
     if (cfg.displaySwitch && (caps.has(CAP.lighting) || caps.has(CAP.execute))) {
-      this.addSwitch('display', 'Display', keep,
+      this.addSwitch(SUBTYPE.display, 'Display', keep,
         () => this.state.lighting ?? this.accessory.context.displayOn ?? true,
         on => this.setDisplay(on));
     }
 
+    if (cfg.beepSwitch && caps.has(CAP.beep)) {
+      this.addSwitch(SUBTYPE.beep, 'Beep', keep,
+        () => this.state.beep ?? true,
+        on => this.queue([{ capability: CAP.beep, command: on ? 'on' : 'off' }], { beep: on }));
+    }
+
     if (cfg.autoCleanSwitch && caps.has(CAP.autoClean)) {
-      this.addSwitch('autoclean', 'Auto Clean', keep,
+      this.addSwitch(SUBTYPE.autoClean, 'Auto Clean', keep,
         () => this.state.autoClean ?? false,
         on => this.queue([{ capability: CAP.autoClean, command: 'setAutoCleaningMode', arguments: [on ? 'on' : 'off'] }], { autoClean: on }));
     }
 
     // Drop services from a previous configuration so they don't linger as "No Response" tiles.
+    const managed = new Set([this.S.Switch.UUID, this.S.HumiditySensor.UUID, this.S.Fanv2.UUID, this.S.FilterMaintenance.UUID]);
     for (const service of [...this.accessory.services]) {
-      const managed = service.UUID === this.S.Switch.UUID || service.UUID === this.S.HumiditySensor.UUID;
-      if (managed && !keep.has(service.subtype ?? '')) {
+      if (managed.has(service.UUID) && !keep.has(service.subtype ?? '')) {
         this.deps.log.debug(`${this.name}: removing unused ${service.displayName} service`);
+        this.heaterCooler.removeLinkedService(service);
         this.accessory.removeService(service);
       }
     }
+  }
+
+  private wireSpeed(service: Service, levels: string[]): void {
+    const speed = service.getCharacteristic(this.C.RotationSpeed);
+    speed.updateValue(this.speedFor(levels));
+    speed.setProps({ minValue: 0, maxValue: 100, minStep: fanSpeedStep(levels) })
+      .onGet(() => this.read(this.speedFor(levels)))
+      .onSet(value => this.setRotationSpeed(value, levels));
+  }
+
+  private wireSwingMode(service: Service): void {
+    const C = this.C;
+    service.getCharacteristic(C.SwingMode)
+      .onGet(() => this.read(isSwinging(this.state) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED))
+      .onSet(value => this.setSwing(swingFor(Number(value) === C.SwingMode.SWING_ENABLED, this.deps.config.swingMode, this.profile)));
   }
 
   private addSwitch(
@@ -313,6 +419,34 @@ export class PaperclipAirConditioner {
     return Math.min(max, Math.max(min, value));
   }
 
+  /** Slider position for a list of speeds; while on Auto (and Auto isn't on this slider) show the last manual speed. */
+  private speedFor(levels: string[]): number {
+    const mode = this.state.fanMode === 'auto' && !levels.includes('auto')
+      ? this.accessory.context.lastManualFan
+      : this.state.fanMode;
+    return fanModeToSpeed(mode, levels);
+  }
+
+  private filterLife(): number {
+    return Math.round(100 - (this.state.filterUsage ?? 0));
+  }
+
+  private filterChange(): number {
+    const status = this.state.filterStatus;
+    const due = status === 'replace' || status === 'wash';
+    return due ? this.C.FilterChangeIndication.CHANGE_FILTER : this.C.FilterChangeIndication.FILTER_OK;
+  }
+
+  private rememberManualFan(): void {
+    const mode = this.state.fanMode;
+    const manual = fanLevels(this.profile, false);
+    if (mode && mode !== 'auto' && manual.includes(mode)) {
+      this.accessory.context.lastManualFan = mode;
+    } else if (!this.accessory.context.lastManualFan || !manual.includes(this.accessory.context.lastManualFan)) {
+      this.accessory.context.lastManualFan = defaultManualFan(this.profile);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Writes
   // ---------------------------------------------------------------------------
@@ -337,30 +471,55 @@ export class PaperclipAirConditioner {
 
   private async setSetpoint(value: CharacteristicValue): Promise<void> {
     const celsius = clampSetpoint(Number(value), this.profile);
-    const unit = this.profile.unit;
-    const deviceValue = unit === 'F' ? Math.round(fromCelsius(celsius, 'F')) : celsius;
+    const deviceValue = this.profile.unit === 'F' ? Math.round(fromCelsius(celsius, 'F')) : celsius;
     await this.queue(
       [{ capability: CAP.coolingSetpoint, command: 'setCoolingSetpoint', arguments: [deviceValue] }],
       { targetTemperature: celsius },
     );
   }
 
-  private async setRotationSpeed(value: CharacteristicValue): Promise<void> {
-    const fanMode = speedToFanMode(Number(value), this.profile);
+  private async setRotationSpeed(value: CharacteristicValue, levels: string[]): Promise<void> {
+    const fanMode = speedToFanMode(Number(value), levels);
     if (!fanMode) {
       // The Home app sends 0 together with Active = 0 when the slider is dragged to the bottom.
       return;
     }
+    await this.setFanMode(fanMode);
+  }
+
+  private async setFanAuto(auto: boolean): Promise<void> {
+    if (auto) {
+      await this.setFanMode('auto');
+    } else if (this.state.fanMode === 'auto') {
+      await this.setFanMode(this.accessory.context.lastManualFan ?? defaultManualFan(this.profile) ?? 'low');
+    }
+  }
+
+  private async setFanMode(fanMode: string): Promise<void> {
+    if (fanMode !== 'auto') {
+      this.accessory.context.lastManualFan = fanMode;
+    }
     await this.queue([{ capability: CAP.fanMode, command: 'setFanMode', arguments: [fanMode] }], { fanMode });
   }
 
-  private async setSwing(value: CharacteristicValue): Promise<void> {
-    const enabled = Number(value) === this.C.SwingMode.SWING_ENABLED;
-    const oscillation = swingToOscillation(enabled, this.profile, this.deps.config.swingMode);
-    if (!oscillation) {
+  /** `only` limits the commands to one axis, so a stale reading of the other axis is never written back. */
+  private async setSwing(wish: SwingWish, only?: 'vertical' | 'horizontal'): Promise<void> {
+    let commands = swingCommands(wish, this.profile);
+    if (only && this.profile.swing.source === 'airFlow') {
+      const command = only === 'vertical' ? 'setVerticalDirection' : 'setHorizontalDirection';
+      commands = commands.filter(c => c.command === command);
+    }
+    if (commands.length === 0) {
       throw new this.hap.HapStatusError(this.hap.HAPStatus.INVALID_VALUE_IN_REQUEST);
     }
-    await this.queue([{ capability: CAP.oscillation, command: 'setFanOscillationMode', arguments: [oscillation] }], { oscillation });
+    const optimistic: Partial<AcState> = {};
+    if (!only || only === 'vertical') {
+      optimistic.swingVertical = wish.vertical && this.profile.swing.vertical;
+    }
+    if (!only || only === 'horizontal') {
+      optimistic.swingHorizontal = wish.horizontal && this.profile.swing.horizontal;
+    }
+    await this.queue(commands, optimistic);
   }
 
   private async setOptionalMode(mode: string, on: boolean): Promise<void> {
@@ -533,7 +692,8 @@ export class PaperclipAirConditioner {
         (fresh as Record<string, unknown>)[key] = hold.value;
       }
     }
-    this.state = { ...this.state, ...stripUndefined(fresh) };
+    this.state = { ...this.state, ...fresh };
+    this.rememberManualFan();
     this.pushState();
   }
 
@@ -541,9 +701,11 @@ export class PaperclipAirConditioner {
     const C = this.C;
     const s = this.heaterCooler;
     const state = this.state;
+    const active = state.power ? C.Active.ACTIVE : C.Active.INACTIVE;
+    const swing = isSwinging(state) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED;
 
     if (state.power !== undefined) {
-      s.updateCharacteristic(C.Active, state.power ? C.Active.ACTIVE : C.Active.INACTIVE);
+      s.updateCharacteristic(C.Active, active);
     }
     s.updateCharacteristic(C.CurrentHeaterCoolerState, currentHeaterCoolerState(state, this.profile));
     s.updateCharacteristic(C.TargetHeaterCoolerState, modeToTargetState(state.mode, this.profile));
@@ -556,11 +718,33 @@ export class PaperclipAirConditioner {
         s.updateCharacteristic(C.HeatingThresholdTemperature, this.displayedSetpoint());
       }
     }
-    if (this.profile.fanModes.length > 0 && state.fanMode !== undefined) {
-      s.updateCharacteristic(C.RotationSpeed, fanModeToSpeed(state.fanMode, this.profile));
+    if (this.coolerLevels.length > 0 && state.fanMode !== undefined) {
+      s.updateCharacteristic(C.RotationSpeed, this.speedFor(this.coolerLevels));
     }
-    if (this.profile.oscillationModes.some(m => m !== 'fixed') && state.oscillation !== undefined) {
-      s.updateCharacteristic(C.SwingMode, isSwinging(state.oscillation) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED);
+    if (this.profile.swing.source) {
+      s.updateCharacteristic(C.SwingMode, swing);
+    }
+
+    const fan = this.fanService;
+    if (fan) {
+      if (state.power !== undefined) {
+        fan.updateCharacteristic(C.Active, active);
+        fan.updateCharacteristic(C.CurrentFanState, state.power ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.INACTIVE);
+      }
+      if (state.fanMode !== undefined) {
+        fan.updateCharacteristic(C.RotationSpeed, this.speedFor(this.tileLevels));
+        if (hasAutoFan(this.profile)) {
+          fan.updateCharacteristic(C.TargetFanState, state.fanMode === 'auto' ? C.TargetFanState.AUTO : C.TargetFanState.MANUAL);
+        }
+      }
+      if (this.profile.swing.source) {
+        fan.updateCharacteristic(C.SwingMode, swing);
+      }
+    }
+
+    if (this.filterService) {
+      this.filterService.updateCharacteristic(C.FilterLifeLevel, this.filterLife());
+      this.filterService.updateCharacteristic(C.FilterChangeIndication, this.filterChange());
     }
     if (this.humidityService && state.humidity !== undefined) {
       this.humidityService.updateCharacteristic(C.CurrentRelativeHumidity, state.humidity);
@@ -573,6 +757,7 @@ export class PaperclipAirConditioner {
   private pushUnreachable(): void {
     const error = new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     this.heaterCooler.updateCharacteristic(this.C.Active, error);
+    this.fanService?.updateCharacteristic(this.C.Active, error);
   }
 }
 
@@ -590,14 +775,17 @@ function orderCommands(commands: Command[]): Command[] {
   return [...on, ...mode, ...rest, ...off];
 }
 
+const ON_OFF_NAMES: Record<string, string> = {
+  [CAP.switch]: 'power',
+  [CAP.lighting]: 'display',
+  [CAP.beep]: 'beep',
+};
+
 function describeCommand(command: Command): string {
-  if (command.capability === CAP.switch) {
-    return `power ${command.command}`;
+  const name = ON_OFF_NAMES[command.capability];
+  if (name && (command.command === 'on' || command.command === 'off')) {
+    return `${name} ${command.command}`;
   }
   const args = (command.arguments ?? []).map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(', ');
   return `${command.command}(${args})`;
-}
-
-function stripUndefined<T extends object>(value: T): Partial<T> {
-  return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as Partial<T>;
 }

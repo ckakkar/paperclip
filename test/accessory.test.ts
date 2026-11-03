@@ -7,8 +7,8 @@ import { buildProfile } from '../src/ac/profile.js';
 import { parseConfig } from '../src/config.js';
 import type { Command } from '../src/smartthings/client.js';
 import { SmartThingsApiError, type SmartThingsClient } from '../src/smartthings/client.js';
-import type { DeviceStatus } from '../src/smartthings/types.js';
-import { windFreeDevice, windFreeStatus } from './fixtures.js';
+import type { Device, DeviceStatus } from '../src/smartthings/types.js';
+import { rac01011Device, rac01011Status, windFreeDevice, windFreeStatus } from './fixtures.js';
 
 const { Characteristic: C, Service: S } = hap;
 
@@ -16,9 +16,9 @@ class FakePlatformAccessory extends hap.Accessory {
   context: Record<string, unknown> = {};
 }
 
-function setup(options: { config?: Record<string, unknown>; status?: DeviceStatus } = {}) {
+function setup(options: { config?: Record<string, unknown>; status?: DeviceStatus; device?: Device } = {}) {
   const status = options.status ?? windFreeStatus();
-  const device = windFreeDevice();
+  const device = options.device ?? windFreeDevice();
   const profile = buildProfile(device, status);
   const sent: Command[][] = [];
   const client = {
@@ -62,12 +62,16 @@ describe('PaperclipAirConditioner', () => {
 
     expect(char(C.TargetHeaterCoolerState).props.validValues).toEqual([0, 2]);
     expect(char(C.CoolingThresholdTemperature).props).toMatchObject({ minValue: 16, maxValue: 30, minStep: 1 });
-    expect(char(C.RotationSpeed).props.minStep).toBe(20);
+    // With a Fan tile holding the Auto toggle, the AC tile's slider only has the four manual speeds.
+    expect(char(C.RotationSpeed).props.minStep).toBe(25);
     expect(heaterCooler.testCharacteristic(C.SwingMode)).toBe(true);
     expect(heaterCooler.testCharacteristic(C.HeatingThresholdTemperature)).toBe(false);
 
     const subtypes = accessory.services.map(s => s.subtype).filter(Boolean).sort();
-    expect(subtypes).toEqual(['dry', 'humidity', 'mode-windFree']);
+    expect(subtypes).toEqual([
+      'dry', 'fan-speed', 'humidity', 'mode-quiet', 'mode-sleep', 'mode-speed', 'mode-windFree', 'mode-windFreeSleep',
+      'swing-horizontal', 'swing-vertical',
+    ]);
     expect(char(C.CurrentTemperature).value).toBe(29);
     expect(char(C.CoolingThresholdTemperature).value).toBe(24);
     expect(char(C.Active).value).toBe(0);
@@ -149,7 +153,13 @@ describe('PaperclipAirConditioner', () => {
   it('adds optional switches only when asked and supported', () => {
     const { accessory } = setup({ config: { displaySwitch: true, autoCleanSwitch: true, fanModeSwitch: true, optionalModeSwitches: ['quiet', 'notAMode'] } });
     const subtypes = accessory.services.map(s => s.subtype).filter(Boolean).sort();
-    expect(subtypes).toEqual(['autoclean', 'display', 'dry', 'fan', 'humidity', 'mode-quiet']);
+    expect(subtypes).toEqual(['autoclean', 'display', 'dry', 'fan', 'fan-speed', 'humidity', 'mode-quiet', 'swing-horizontal', 'swing-vertical']);
+  });
+
+  it('keeps the old single-slider behaviour when the Fan tile is turned off', () => {
+    const { accessory, char } = setup({ config: { fanTile: false } });
+    expect(char(C.RotationSpeed).props.minStep).toBe(20);
+    expect(accessory.getServiceById(S.Fanv2, 'fan-speed')).toBeUndefined();
   });
 
   it('reports a failed command back to HomeKit', async () => {
@@ -185,5 +195,84 @@ describe('PaperclipAirConditioner', () => {
     await vi.advanceTimersByTimeAsync(31_000);
     await ac.refresh();
     expect(client.getStatus).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('a 2025 unit with air-flow swing (DA-AC-RAC-01011)', () => {
+  const rac = (config: Record<string, unknown> = {}) =>
+    setup({ device: rac01011Device(), status: rac01011Status(), config: { fanModeSwitch: true, beepSwitch: true, ...config } });
+
+  it('exposes a Fan tile, both swing axes, Sleep/Quiet/Turbo and filter life', () => {
+    const { accessory, heaterCooler } = rac();
+    const subtypes = accessory.services.map(s => s.subtype).filter(Boolean).sort();
+    expect(subtypes).toEqual([
+      'beep', 'dry', 'fan', 'fan-speed', 'filter', 'mode-quiet', 'mode-sleep', 'mode-speed', 'swing-horizontal', 'swing-vertical',
+    ]);
+    expect(accessory.getServiceById(S.Switch, 'mode-speed')!.getCharacteristic(C.Name).value).toBe('Samsung Room A/C Turbo');
+    expect(heaterCooler.testCharacteristic(C.SwingMode)).toBe(true);
+
+    const fan = accessory.getServiceById(S.Fanv2, 'fan-speed')!;
+    expect(fan.getCharacteristic(C.TargetFanState).value).toBe(C.TargetFanState.MANUAL);
+    expect(fan.getCharacteristic(C.RotationSpeed).value).toBe(25);
+    expect(fan.getCharacteristic(C.RotationSpeed).props.minStep).toBe(25);
+
+    const filter = accessory.getServiceById(S.FilterMaintenance, 'filter')!;
+    expect(filter.getCharacteristic(C.FilterLifeLevel).value).toBe(23);
+    expect(filter.getCharacteristic(C.FilterChangeIndication).value).toBe(C.FilterChangeIndication.FILTER_OK);
+    expect(heaterCooler.linkedServices).toContain(fan);
+  });
+
+  it('switches the fan to Auto and back to the last manual speed', async () => {
+    const { accessory, sent } = rac();
+    const fan = accessory.getServiceById(S.Fanv2, 'fan-speed')!;
+    await write(fan.getCharacteristic(C.RotationSpeed), 100);
+    expect(sent[0]).toEqual([{ capability: 'airConditionerFanMode', command: 'setFanMode', arguments: ['turbo'] }]);
+    await write(fan.getCharacteristic(C.TargetFanState), C.TargetFanState.AUTO);
+    expect(sent[1]).toEqual([{ capability: 'airConditionerFanMode', command: 'setFanMode', arguments: ['auto'] }]);
+    expect(fan.getCharacteristic(C.RotationSpeed).value).toBe(100);
+    await write(fan.getCharacteristic(C.TargetFanState), C.TargetFanState.MANUAL);
+    expect(sent[2]).toEqual([{ capability: 'airConditionerFanMode', command: 'setFanMode', arguments: ['turbo'] }]);
+  });
+
+  it('swings both axes from Oscillate and one axis from its own switch', async () => {
+    const { accessory, char, sent } = rac();
+    await write(char(C.SwingMode), C.SwingMode.SWING_ENABLED);
+    expect(sent[0]).toEqual([
+      { capability: 'samsungce.airConditionerAirFlowDirection', command: 'setVerticalDirection', arguments: ['swing'] },
+      { capability: 'samsungce.airConditionerAirFlowDirection', command: 'setHorizontalDirection', arguments: ['swing'] },
+    ]);
+    const leftRight = accessory.getServiceById(S.Switch, 'swing-horizontal')!.getCharacteristic(C.On);
+    expect(leftRight.value).toBe(true);
+    await write(leftRight, false);
+    expect(sent[1]).toEqual([
+      { capability: 'samsungce.airConditionerAirFlowDirection', command: 'setHorizontalDirection', arguments: ['fixed'] },
+    ]);
+    expect(char(C.SwingMode).value).toBe(C.SwingMode.SWING_ENABLED);
+  });
+
+  it('turns on Turbo and Fan Only, and resets the filter', async () => {
+    const { accessory, sent } = rac();
+    await write(accessory.getServiceById(S.Switch, 'mode-speed')!.getCharacteristic(C.On), true);
+    expect(sent[0]).toEqual([{ capability: 'custom.airConditionerOptionalMode', command: 'setAcOptionalMode', arguments: ['speed'] }]);
+
+    const fanOnly = accessory.getServiceById(S.Switch, 'fan')!.getCharacteristic(C.On);
+    await write(fanOnly, true);
+    expect(sent[1]).toEqual([{ capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['fan'] }]);
+    await write(fanOnly, false);
+    expect(sent[2]).toEqual([{ capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['cool'] }]);
+
+    await write(accessory.getServiceById(S.FilterMaintenance, 'filter')!.getCharacteristic(C.ResetFilterIndication), 1);
+    expect(sent[3]).toEqual([{ capability: 'custom.dustFilter', command: 'resetDustFilter' }]);
+  });
+
+  it('flags a dirty filter and toggles the beep', async () => {
+    const { accessory, ac, sent } = rac();
+    ac.applyStatus(rac01011Status({ 'custom.dustFilter': { dustFilterUsage: { value: 100 }, dustFilterStatus: { value: 'wash' } } }));
+    const filter = accessory.getServiceById(S.FilterMaintenance, 'filter')!;
+    expect(filter.getCharacteristic(C.FilterChangeIndication).value).toBe(C.FilterChangeIndication.CHANGE_FILTER);
+    expect(filter.getCharacteristic(C.FilterLifeLevel).value).toBe(0);
+
+    await write(accessory.getServiceById(S.Switch, 'beep')!.getCharacteristic(C.On), false);
+    expect(sent[0]).toEqual([{ capability: 'samsungce.airConditionerBeep', command: 'off' }]);
   });
 });
