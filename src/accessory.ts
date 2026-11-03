@@ -1,6 +1,7 @@
 import type { API, Characteristic, CharacteristicValue, PlatformAccessory, Service, WithUUID } from 'homebridge';
 
 import {
+  autoMode,
   canHeat,
   clampSetpoint,
   coolMode,
@@ -17,6 +18,8 @@ import {
   isSpecialMode,
   isSwinging,
   modeToTargetState,
+  optionalModeBlocker,
+  optionalModeEndsWith,
   speedToFanMode,
   swingCommands,
   swingFor,
@@ -81,37 +84,47 @@ export interface SwitchSpec {
   subtype: string;
   /** Short name, as a native accessory would use inside its own tile. */
   label: string;
+  /**
+   * "ac": shown with the AC, under the dial, like the Samsung app's own page (Dry, Turbo, Quiet, Sleep).
+   * "settings": unit settings you rarely touch (Display, Beep, Auto Clean, swing axes), on a separate accessory.
+   */
+  placement: 'ac' | 'settings';
 }
 
-/** The mode switches this unit gets with this config. They live on a separate "Modes" accessory. */
+/** The switches this unit gets with this config, and where each one lives. */
 export function switchPlan(profile: AcProfile, config: PaperclipConfig): SwitchSpec[] {
   const caps = profile.capabilities;
   const plan: SwitchSpec[] = [];
-  for (const mode of config.optionalModeSwitches) {
-    if (mode !== 'off' && profile.optionalModes.includes(mode)) {
-      plan.push({ subtype: SUBTYPE.optionalMode(mode), label: optionalModeLabel(mode) });
-    }
-  }
   if (config.dryModeSwitch && dryMode(profile)) {
-    plan.push({ subtype: SUBTYPE.dry, label: 'Dry' });
+    plan.push({ subtype: SUBTYPE.dry, label: 'Dry', placement: 'ac' });
   }
   if (config.fanModeSwitch && fanOnlyMode(profile)) {
-    plan.push({ subtype: SUBTYPE.fanOnly, label: 'Fan Only' });
+    plan.push({ subtype: SUBTYPE.fanOnly, label: 'Fan Only', placement: 'ac' });
+  }
+  for (const mode of config.optionalModeSwitches) {
+    if (mode !== 'off' && profile.optionalModes.includes(mode)) {
+      plan.push({ subtype: SUBTYPE.optionalMode(mode), label: optionalModeLabel(mode), placement: 'ac' });
+    }
   }
   if (config.swingDirectionSwitches && profile.swing.vertical && profile.swing.horizontal) {
-    plan.push({ subtype: SUBTYPE.swingVertical, label: 'Swing Up/Down' });
-    plan.push({ subtype: SUBTYPE.swingHorizontal, label: 'Swing Left/Right' });
+    plan.push({ subtype: SUBTYPE.swingVertical, label: 'Swing Up/Down', placement: 'settings' });
+    plan.push({ subtype: SUBTYPE.swingHorizontal, label: 'Swing Left/Right', placement: 'settings' });
   }
   if (config.displaySwitch && (caps.has(CAP.lighting) || caps.has(CAP.execute))) {
-    plan.push({ subtype: SUBTYPE.display, label: 'Display' });
+    plan.push({ subtype: SUBTYPE.display, label: 'Display', placement: 'settings' });
   }
   if (config.beepSwitch && caps.has(CAP.beep)) {
-    plan.push({ subtype: SUBTYPE.beep, label: 'Beep' });
+    plan.push({ subtype: SUBTYPE.beep, label: 'Beep', placement: 'settings' });
   }
   if (config.autoCleanSwitch && caps.has(CAP.autoClean)) {
-    plan.push({ subtype: SUBTYPE.autoClean, label: 'Auto Clean' });
+    plan.push({ subtype: SUBTYPE.autoClean, label: 'Auto Clean', placement: 'settings' });
   }
   return plan;
+}
+
+/** Whether this unit needs the companion Settings accessory. */
+export function needsSettingsAccessory(profile: AcProfile, config: PaperclipConfig): boolean {
+  return switchPlan(profile, config).some(s => s.placement === 'settings');
 }
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
@@ -153,7 +166,7 @@ export class PaperclipAirConditioner {
     readonly device: Device,
     readonly profile: AcProfile,
     initialStatus: DeviceStatus,
-    /** Companion accessory for the mode switches. Without it, the switches go on the main accessory. */
+    /** Companion accessory for rarely used settings switches. Without it, they go on the main accessory. */
     readonly modesAccessory?: PlatformAccessory<AccessoryContext>,
   ) {
     this.hap = deps.api.hap;
@@ -171,7 +184,7 @@ export class PaperclipAirConditioner {
     accessory.context.kind = 'main';
     if (modesAccessory) {
       modesAccessory.context.deviceId = device.deviceId;
-      modesAccessory.context.label = `${this.name} Modes`;
+      modesAccessory.context.label = `${this.name} Settings`;
       modesAccessory.context.kind = 'modes';
     }
     this.rememberManualFan();
@@ -228,7 +241,8 @@ export class PaperclipAirConditioner {
     const service = this.accessory.getService(this.S.HeaterCooler)
       ?? this.accessory.addService(this.S.HeaterCooler, this.name);
     service.setPrimaryService(true);
-    service.setCharacteristic(C.Name, this.name);
+    // Without its own ConfiguredName the Home app titles this control "Heater-Cooler".
+    this.nameService(service, this.name, ['Heater-Cooler']);
 
     service.getCharacteristic(C.Active)
       .onGet(() => this.read(this.coolerActive() ? C.Active.ACTIVE : C.Active.INACTIVE))
@@ -256,7 +270,8 @@ export class PaperclipAirConditioner {
       .onGet(() => this.read(this.displayedSetpoint()))
       .onSet(value => this.setSetpoint(value));
 
-    if (canHeat(this.profile)) {
+    // The Home app only offers Auto when both thresholds exist. Samsung has one setpoint, so both mirror it.
+    if (this.hasHeatingThreshold()) {
       const heating = service.getCharacteristic(C.HeatingThresholdTemperature);
       heating.updateValue(this.displayedSetpoint());
       heating.setProps(thresholdProps)
@@ -336,39 +351,46 @@ export class PaperclipAirConditioner {
       this.humidityService = humidity;
     }
 
-    // Switches belong on the Modes accessory; only keep them here when there isn't one.
     const companions = new Set([this.S.Fanv2.UUID, this.S.FilterMaintenance.UUID, this.S.HumiditySensor.UUID]);
     for (const service of [...this.accessory.services]) {
-      const strayCompanion = companions.has(service.UUID) && !keep.has(service.subtype ?? '');
-      const straySwitch = service.UUID === this.S.Switch.UUID && this.modesAccessory !== undefined;
-      if (strayCompanion || straySwitch) {
+      if (companions.has(service.UUID) && !keep.has(service.subtype ?? '')) {
         this.removeService(this.accessory, service);
       }
     }
   }
 
   private setupSwitches(): void {
-    const target = this.modesAccessory ?? this.accessory;
     const plan = switchPlan(this.profile, this.deps.config);
     const handlers = this.switchHandlers();
+    const placed = new Map<PlatformAccessory, Set<string>>([[this.accessory, new Set()]]);
+    if (this.modesAccessory) {
+      placed.set(this.modesAccessory, new Set());
+    }
+
     for (const spec of plan) {
       const handler = handlers[spec.subtype] ?? this.optionalModeHandler(spec.subtype);
       if (!handler) {
         continue;
       }
+      const target = spec.placement === 'settings' && this.modesAccessory ? this.modesAccessory : this.accessory;
+      placed.get(target)!.add(spec.subtype);
       const service = target.getServiceById(this.S.Switch, spec.subtype)
         ?? target.addService(this.S.Switch, spec.label, spec.subtype);
       this.nameService(service, spec.label, [`${this.name} ${spec.label}`, `${this.name} ${legacyLabel(spec)}`]);
       service.getCharacteristic(this.C.On)
         .onGet(() => this.read(handler.read() ?? false))
         .onSet(value => handler.write(Boolean(value)));
+      if (target === this.accessory) {
+        this.heaterCooler.addLinkedService(service);
+      }
       this.extras.push({ service, read: handler.read });
     }
 
-    const planned = new Set(plan.map(s => s.subtype));
-    for (const service of [...target.services]) {
-      if (service.UUID === this.S.Switch.UUID && !planned.has(service.subtype ?? '')) {
-        this.removeService(target, service);
+    for (const [target, keep] of placed) {
+      for (const service of [...target.services]) {
+        if (service.UUID === this.S.Switch.UUID && !keep.has(service.subtype ?? '')) {
+          this.removeService(target, service);
+        }
       }
     }
   }
@@ -475,6 +497,10 @@ export class PaperclipAirConditioner {
     return value;
   }
 
+  private hasHeatingThreshold(): boolean {
+    return canHeat(this.profile) || autoMode(this.profile) !== undefined;
+  }
+
   private isFanOnly(): boolean {
     return this.state.mode !== undefined && FAN_ONLY_MODES.includes(this.state.mode);
   }
@@ -574,7 +600,7 @@ export class PaperclipAirConditioner {
     await this.queue([
       { capability: CAP.switch, command: 'on' },
       { capability: CAP.mode, command: 'setAirConditionerMode', arguments: [fanOnly] },
-    ], { power: true, mode: fanOnly });
+    ], this.modeChange(fanOnly));
   }
 
   private async setTargetState(value: CharacteristicValue): Promise<void> {
@@ -587,7 +613,7 @@ export class PaperclipAirConditioner {
       commands.push({ capability: CAP.switch, command: 'on' });
     }
     commands.push({ capability: CAP.mode, command: 'setAirConditionerMode', arguments: [mode] });
-    await this.queue(commands, { power: true, mode });
+    await this.queue(commands, this.modeChange(mode));
   }
 
   private async setSetpoint(value: CharacteristicValue): Promise<void> {
@@ -644,15 +670,25 @@ export class PaperclipAirConditioner {
   }
 
   private async setOptionalMode(mode: string, on: boolean): Promise<void> {
-    if (!on && this.state.optionalMode !== mode) {
+    if (!on) {
+      if (this.state.optionalMode === mode) {
+        await this.queue([{ capability: CAP.optionalMode, command: 'setAcOptionalMode', arguments: ['off'] }], { optionalMode: 'off' });
+      }
       return;
     }
-    const commands: Command[] = [];
-    if (on && this.state.power !== true) {
-      commands.push({ capability: CAP.switch, command: 'on' });
+    const blocker = optionalModeBlocker(mode, this.state);
+    if (blocker) {
+      // Like the Samsung app, which greys these out: the Home app flips the switch back.
+      this.deps.log.info(`${this.name}: ${optionalModeLabel(mode)} ${blocker}; not turned on.`);
+      setTimeout(() => this.pushState(), 0);
+      throw new this.hap.HapStatusError(this.hap.HAPStatus.NOT_ALLOWED_IN_CURRENT_STATE);
     }
-    commands.push({ capability: CAP.optionalMode, command: 'setAcOptionalMode', arguments: [on ? mode : 'off'] });
-    await this.queue(commands, on ? { power: true, optionalMode: mode } : { optionalMode: 'off' });
+    await this.queue([{ capability: CAP.optionalMode, command: 'setAcOptionalMode', arguments: [mode] }], { optionalMode: mode });
+  }
+
+  /** Optimistic state for a mode change, including the optional mode the unit will drop. */
+  private modeChange(mode: string): Partial<AcState> {
+    return optionalModeEndsWith(this.state.optionalMode, mode) ? { power: true, mode, optionalMode: 'off' } : { power: true, mode };
   }
 
   private async setSpecialMode(mode: string, on: boolean): Promise<void> {
@@ -666,7 +702,7 @@ export class PaperclipAirConditioner {
         commands.push({ capability: CAP.switch, command: 'on' });
       }
       commands.push({ capability: CAP.mode, command: 'setAirConditionerMode', arguments: [mode] });
-      await this.queue(commands, { power: true, mode });
+      await this.queue(commands, this.modeChange(mode));
       return;
     }
 
@@ -831,7 +867,7 @@ export class PaperclipAirConditioner {
     }
     if (state.targetTemperature !== undefined) {
       s.updateCharacteristic(C.CoolingThresholdTemperature, this.displayedSetpoint());
-      if (canHeat(this.profile)) {
+      if (this.hasHeatingThreshold()) {
         s.updateCharacteristic(C.HeatingThresholdTemperature, this.displayedSetpoint());
       }
     }

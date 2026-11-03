@@ -18,10 +18,12 @@ iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi�
 
 ## What you get
 
-Paperclip adds two accessories per AC, laid out like a native HomeKit air conditioner:
+The AC's page in the Home app follows the Samsung SmartThings app: a temperature dial with **Off / Cool / Auto**, then a **Fan**
+control and the mode toggles right under it. Unit settings you rarely touch (Display, Beep, Auto Clean) live on a separate
+**Settings** accessory.
 
-- **The AC**: the temperature dial and Cool/Auto, with a **Fan** control and filter status inside the same tile.
-- **Modes**: a separate tile holding Samsung's extras as short-named switches, so they don't crowd the AC.
+> Apple fixes the mode menu to Off, Cool, Auto and Heat. Samsung's **Dry** therefore appears as a toggle under the dial, and
+> **Fan** mode is what you get when you turn the Fan on while the AC is off.
 
 | In the Home app | Samsung feature |
 |---|---|
@@ -32,9 +34,9 @@ Paperclip adds two accessories per AC, laid out like a native HomeKit air condit
 | **Fan** (inside the AC) | Low → Medium → High → Turbo, an **Auto** toggle and **Oscillate**. Fan on while the AC is off = fan-only mode |
 | **Filter** (inside the AC) | Filter life left, and an alert when it needs cleaning |
 | Humidity (inside the AC) | Indoor humidity, if the unit measures it |
-| **Modes**: Sleep, Quiet, Turbo, WindFree… | Samsung's optional modes, whichever your unit supports. Only one runs at a time |
-| **Modes**: Dry | Dehumidify. Turning it off returns the AC to its previous mode |
-| **Modes**: Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default |
+| **Turbo**, **Quiet**, **Sleep**, WindFree… | Samsung's optional modes, whichever your unit supports. Only one runs at a time, only while the AC is on, and Turbo only in Cool |
+| **Dry** | Dehumidify. Turning it off returns the AC to its previous mode |
+| **Settings** accessory: Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default |
 
 Paperclip only adds a control when your AC actually reports it, so you don't get tiles that always say "No Response".
 

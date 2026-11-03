@@ -1,6 +1,6 @@
 import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig } from 'homebridge';
 
-import { PaperclipAirConditioner, switchPlan, type AccessoryContext } from './accessory.js';
+import { PaperclipAirConditioner, needsSettingsAccessory, type AccessoryContext } from './accessory.js';
 import { buildProfile, describeProfile, isAirConditioner } from './ac/profile.js';
 import { parseConfig, type PaperclipConfig } from './config.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -148,14 +148,14 @@ export class PaperclipPlatform implements DynamicPlatformPlugin {
 
     const { accessory, isNew } = this.accessoryFor(uuid, label, this.api.hap.Categories.AIR_CONDITIONER);
 
-    // Mode switches (Sleep, Turbo, Dry…) get their own accessory, so the AC's tile only shows
-    // the thermostat and fan controls, like a native air conditioner.
+    // Rarely used unit settings (Display, Beep, Auto Clean…) get their own accessory, so the AC's
+    // own page only carries what the Samsung app shows up top: dial, mode, fan and the mode toggles.
     const modesUuid = this.uuidFor(device.deviceId, 'modes');
     let modes: { accessory: PlatformAccessory<AccessoryContext>; isNew: boolean } | undefined;
-    if (switchPlan(profile, this.config).length > 0) {
-      modes = this.accessoryFor(modesUuid, `${label} Modes`, this.api.hap.Categories.SWITCH);
+    if (needsSettingsAccessory(profile, this.config)) {
+      modes = this.accessoryFor(modesUuid, `${label} Settings`, this.api.hap.Categories.SWITCH);
     } else {
-      this.removeAccessory(modesUuid, 'no mode switches are turned on');
+      this.removeAccessory(modesUuid, 'no settings switches are turned on');
     }
 
     const handler = new PaperclipAirConditioner(
