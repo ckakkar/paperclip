@@ -1,0 +1,152 @@
+{
+  "pluginAlias": "Paperclip",
+  "pluginType": "platform",
+  "singular": true,
+  "customUi": true,
+  "headerDisplay": "Control Samsung air conditioners from the Home app, Siri and your HomePod. Connect to SmartThings above, then pick which extras to show.",
+  "footerDisplay": "Help and issues: [github.com/ckakkar/paperclip](https://github.com/ckakkar/paperclip)",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Name",
+        "type": "string",
+        "default": "Paperclip",
+        "description": "Shown in the Homebridge log."
+      },
+      "pollInterval": {
+        "title": "Refresh every (seconds)",
+        "type": "integer",
+        "default": 20,
+        "minimum": 10,
+        "maximum": 600,
+        "description": "How often Paperclip reads the AC from SmartThings. Changes you make in HomeKit are sent immediately either way."
+      },
+      "optionalModeSwitches": {
+        "title": "Samsung extra modes to show as switches",
+        "type": "array",
+        "uniqueItems": true,
+        "default": ["windFree"],
+        "items": {
+          "type": "string",
+          "enum": ["windFree", "windFreeSleep", "sleep", "quiet", "speed", "smart", "comfort", "longWind"]
+        },
+        "description": "Only modes your unit supports are added. The settings page above lists your unit's modes."
+      },
+      "dryModeSwitch": {
+        "title": "Dry (dehumidify) switch",
+        "type": "boolean",
+        "default": true,
+        "description": "HomeKit has no dry mode, so it gets its own switch. Turning it off returns the AC to its previous mode."
+      },
+      "fanModeSwitch": {
+        "title": "Fan-only switch",
+        "type": "boolean",
+        "default": false
+      },
+      "humiditySensor": {
+        "title": "Humidity sensor",
+        "type": "boolean",
+        "default": true,
+        "description": "Shows the room humidity your AC measures (if it has a sensor)."
+      },
+      "displaySwitch": {
+        "title": "Display light switch",
+        "type": "boolean",
+        "default": false,
+        "description": "Turns the temperature display on the indoor unit on or off."
+      },
+      "autoCleanSwitch": {
+        "title": "Auto Clean switch",
+        "type": "boolean",
+        "default": false
+      },
+      "swingMode": {
+        "title": "Swing direction when you turn swing on",
+        "type": "string",
+        "default": "all",
+        "oneOf": [
+          { "title": "All directions", "enum": ["all"] },
+          { "title": "Up and down", "enum": ["vertical"] },
+          { "title": "Left and right", "enum": ["horizontal"] }
+        ]
+      },
+      "excludeDevices": {
+        "title": "Hide these air conditioners",
+        "type": "array",
+        "items": { "type": "string", "title": "Device name or ID" },
+        "description": "Names or SmartThings device IDs (shown in the Homebridge log) to leave out of HomeKit."
+      },
+      "removeStaleAccessories": {
+        "title": "Remove ACs that are deleted from SmartThings",
+        "type": "boolean",
+        "default": true
+      },
+      "requestTimeout": {
+        "title": "SmartThings request timeout (seconds)",
+        "type": "integer",
+        "default": 15,
+        "minimum": 3,
+        "maximum": 60
+      },
+      "clientId": {
+        "title": "OAuth Client ID",
+        "type": "string",
+        "description": "Only for manual setups. The settings page above normally stores this for you."
+      },
+      "clientSecret": {
+        "title": "OAuth Client Secret",
+        "type": "string"
+      },
+      "refreshToken": {
+        "title": "OAuth Refresh Token",
+        "type": "string",
+        "description": "Used once; after that Paperclip keeps the rotated token in its own file."
+      },
+      "redirectUri": {
+        "title": "OAuth Redirect URI",
+        "type": "string",
+        "placeholder": "https://httpbin.org/get"
+      },
+      "accessToken": {
+        "title": "Personal access token (testing only)",
+        "type": "string",
+        "description": "SmartThings tokens stop working 24 hours after you create them. Use the setup above instead."
+      }
+    }
+  },
+  "layout": [
+    "pollInterval",
+    {
+      "type": "fieldset",
+      "title": "HomeKit extras",
+      "description": "Everything here is optional and only appears if your unit supports it.",
+      "items": [
+        { "key": "optionalModeSwitches", "type": "checkboxes" },
+        "dryModeSwitch",
+        "fanModeSwitch",
+        "humiditySensor",
+        "displaySwitch",
+        "autoCleanSwitch",
+        "swingMode"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Devices",
+      "expandable": true,
+      "expanded": false,
+      "items": [
+        { "key": "excludeDevices", "type": "array", "items": ["excludeDevices[]"] },
+        "removeStaleAccessories"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Advanced",
+      "expandable": true,
+      "expanded": false,
+      "items": ["name", "requestTimeout", "clientId", "clientSecret", "refreshToken", "redirectUri", "accessToken"]
+    }
+  ]
+}

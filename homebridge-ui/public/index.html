@@ -1,0 +1,272 @@
+<style>
+  .pc-step { border-left: 3px solid var(--bs-primary, #ffa000); padding-left: 1rem; margin-bottom: 1.5rem; }
+  .pc-step h5 { margin-bottom: .25rem; }
+  .pc-muted { opacity: .75; font-size: .9rem; }
+  .pc-tabs { display: flex; gap: .5rem; margin: .75rem 0; flex-wrap: wrap; }
+  .pc-tabs button[aria-pressed="true"] { font-weight: 600; }
+  .pc-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; white-space: pre; overflow-x: auto; padding: .75rem; border-radius: .375rem; background: rgba(127,127,127,.12); }
+  .pc-ac { padding: .6rem .8rem; border-radius: .375rem; background: rgba(127,127,127,.08); margin-bottom: .5rem; }
+  .pc-ac small { display: block; opacity: .75; }
+  .pc-hidden { display: none !important; }
+  .pc-row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+  ol.pc-list { padding-left: 1.2rem; margin-bottom: .75rem; }
+  ol.pc-list li { margin-bottom: .25rem; }
+</style>
+
+<div id="pc-root">
+  <p class="pc-muted mb-3">
+    Paperclip connects your Samsung air conditioner to HomeKit through SmartThings, the app your AC already uses.
+    Setup takes about three minutes and happens once.
+  </p>
+
+  <div id="pc-file-error" class="alert alert-danger pc-hidden"></div>
+
+  <!-- Step 1: SmartThings app -->
+  <section id="pc-step-app" class="pc-step pc-hidden">
+    <h5>Step 1 · Create Paperclip's SmartThings app</h5>
+    <p class="pc-muted">SmartThings needs a small private "app" in your account that Paperclip signs in through. Paperclip can make it for you.</p>
+
+    <div class="pc-tabs" role="tablist">
+      <button type="button" class="btn btn-sm btn-primary" id="pc-tab-quick" aria-pressed="true">Quick: use a token</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="pc-tab-manual" aria-pressed="false">I already have a Client ID</button>
+    </div>
+
+    <div id="pc-pane-quick">
+      <ol class="pc-list">
+        <li>Open <a href="https://account.smartthings.com/tokens" target="_blank" rel="noopener">account.smartthings.com/tokens</a> and sign in with your Samsung account.</li>
+        <li>Click <b>Generate new token</b>, call it <code>paperclip</code>, tick <b>every</b> scope, then <b>Generate token</b>.</li>
+        <li>Copy the token and paste it here. It is only used once to create the app, and is not saved.</li>
+      </ol>
+      <div class="pc-row mb-2">
+        <input id="pc-pat" type="password" class="form-control" style="max-width: 28rem" placeholder="Personal access token" autocomplete="off" />
+        <button id="pc-create" type="button" class="btn btn-primary">Create app</button>
+      </div>
+    </div>
+
+    <div id="pc-pane-manual" class="pc-hidden">
+      <p class="pc-muted">Use this if the quick option fails, or if you created an OAuth-In app with the SmartThings CLI.</p>
+      <div class="mb-2"><input id="pc-client-id" class="form-control" placeholder="OAuth Client ID" autocomplete="off" /></div>
+      <div class="mb-2"><input id="pc-client-secret" type="password" class="form-control" placeholder="OAuth Client Secret" autocomplete="off" /></div>
+      <div class="mb-2"><input id="pc-redirect" class="form-control" placeholder="Redirect URI" /></div>
+      <button id="pc-use-app" type="button" class="btn btn-primary mb-3">Save app</button>
+      <details>
+        <summary>How to create the app with the SmartThings CLI</summary>
+        <ol class="pc-list mt-2">
+          <li>On the Homebridge machine run <code>brew install smartthingscommunity/smartthings/smartthings</code></li>
+          <li>Save the JSON below as <code>paperclip-app.json</code></li>
+          <li>Run <code>smartthings apps:create -i paperclip-app.json</code> and sign in when the browser opens</li>
+          <li>Copy the <b>OAuth Client Id</b> and <b>OAuth Client Secret</b> it prints into the fields above</li>
+        </ol>
+        <div id="pc-app-json" class="pc-code"></div>
+      </details>
+    </div>
+  </section>
+
+  <!-- Step 2: authorize -->
+  <section id="pc-step-auth" class="pc-step pc-hidden">
+    <h5>Step 2 · Let Paperclip control your AC</h5>
+    <ol class="pc-list">
+      <li><a id="pc-auth-link" href="#" target="_blank" rel="noopener" class="btn btn-sm btn-primary">Open SmartThings sign-in</a></li>
+      <li>Sign in, choose the <b>location</b> your air conditioner is in, then tap <b>Authorize</b>.</li>
+      <li>You land on a plain page from <code>httpbin.org</code>. Copy the <b>whole address</b> from the address bar (it contains <code>?code=</code>) and paste it here.</li>
+    </ol>
+    <div class="mb-2">
+      <textarea id="pc-pasted" class="form-control" rows="2" placeholder="https://httpbin.org/get?code=…"></textarea>
+    </div>
+    <div class="pc-row">
+      <button id="pc-exchange" type="button" class="btn btn-primary">Connect</button>
+      <button id="pc-restart-app" type="button" class="btn btn-sm btn-link">Start over with a different app</button>
+    </div>
+    <p class="pc-muted mt-2">The code only works for a few minutes. If Connect fails, open the sign-in link again.</p>
+  </section>
+
+  <!-- Connected -->
+  <section id="pc-step-done" class="pc-step pc-hidden">
+    <h5>Connected to SmartThings <span id="pc-location"></span></h5>
+    <p class="pc-muted" id="pc-token-info"></p>
+    <div id="pc-devices" class="mb-2"></div>
+    <div class="pc-row mb-2">
+      <button id="pc-refresh-devices" type="button" class="btn btn-sm btn-outline-secondary">Refresh device list</button>
+      <button id="pc-reconnect" type="button" class="btn btn-sm btn-outline-secondary">Reconnect</button>
+      <button id="pc-disconnect" type="button" class="btn btn-sm btn-outline-danger">Disconnect</button>
+    </div>
+    <div class="alert alert-info mb-0" id="pc-next">
+      Next: click <b>Save</b> below and restart Homebridge if it asks. Your AC then appears in the
+      Home app on your iPhone. If you haven't added Homebridge to the Home app yet, scan the QR code on
+      the Homebridge status page.
+    </div>
+  </section>
+</div>
+
+<script>
+  (() => {
+    const $ = (id) => document.getElementById(id);
+    const show = (id, visible) => $(id).classList.toggle('pc-hidden', !visible);
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    let state = null;
+
+    async function call(path, body, busyButton) {
+      if (busyButton) busyButton.disabled = true;
+      homebridge.showSpinner();
+      try {
+        return await homebridge.request(path, body);
+      } catch (error) {
+        homebridge.toast.error(error?.message || String(error), 'Paperclip');
+        throw error;
+      } finally {
+        homebridge.hideSpinner();
+        if (busyButton) busyButton.disabled = false;
+      }
+    }
+
+    /** Homebridge only starts a platform that has a config block, so make sure there is one. */
+    async function ensureConfigBlock() {
+      const configs = await homebridge.getPluginConfig();
+      if (configs.length === 0) {
+        await homebridge.updatePluginConfig([{ platform: 'Paperclip', name: 'Paperclip' }]);
+        await homebridge.savePluginConfig();
+        return true;
+      }
+      return false;
+    }
+
+    function render() {
+      $('pc-file-error').textContent = state.fileError || '';
+      show('pc-file-error', Boolean(state.fileError));
+      show('pc-step-app', !state.hasApp);
+      show('pc-step-auth', state.hasApp && !state.connected);
+      show('pc-step-done', state.connected);
+      $('pc-app-json').textContent = state.appDefinition;
+      $('pc-redirect').value = $('pc-redirect').value || state.redirectUri;
+      $('pc-location').textContent = state.locationName ? `· ${state.locationName}` : '';
+      $('pc-token-info').textContent = state.connected
+        ? `Sign-in renews automatically. Saved in ${state.credentialsPath}`
+        : '';
+      if (state.connected) {
+        homebridge.showSchemaForm();
+      } else {
+        homebridge.hideSchemaForm();
+      }
+    }
+
+    async function load() {
+      state = await call('/state');
+      render();
+      if (state.hasApp && !state.connected) {
+        const { authorizeUrl } = await call('/authorize-url');
+        $('pc-auth-link').href = authorizeUrl;
+      }
+      if (state.connected) {
+        await ensureConfigBlock();
+        await loadDevices();
+      }
+    }
+
+    function renderDevices(list, deviceCount) {
+      if (!list.length) {
+        $('pc-devices').innerHTML = `<div class="alert alert-warning mb-0">No air conditioners in this SmartThings location (${deviceCount} other device(s)).
+          Click <b>Reconnect</b> and pick the location your AC is in.</div>`;
+        return;
+      }
+      $('pc-devices').innerHTML = list.map((ac) => `
+        <div class="pc-ac"><b>${esc(ac.label)}</b> ${ac.model ? `<span class="pc-muted">${esc(ac.model)}</span>` : ''}
+          <small>${esc(ac.summary || '')}</small>
+          ${ac.optionalModes && ac.optionalModes.length ? `<small>Extra modes you can add as switches below: ${ac.optionalModes.map(esc).join(', ')}</small>` : ''}
+        </div>`).join('');
+    }
+
+    async function loadDevices() {
+      $('pc-devices').innerHTML = '<span class="pc-muted">Loading your air conditioners…</span>';
+      try {
+        const result = await call('/devices');
+        renderDevices(result.airConditioners, result.deviceCount);
+      } catch {
+        $('pc-devices').innerHTML = '<span class="pc-muted">Could not load devices right now.</span>';
+      }
+    }
+
+    function selectTab(quick) {
+      $('pc-tab-quick').setAttribute('aria-pressed', String(quick));
+      $('pc-tab-manual').setAttribute('aria-pressed', String(!quick));
+      $('pc-tab-quick').className = `btn btn-sm ${quick ? 'btn-primary' : 'btn-outline-secondary'}`;
+      $('pc-tab-manual').className = `btn btn-sm ${quick ? 'btn-outline-secondary' : 'btn-primary'}`;
+      show('pc-pane-quick', quick);
+      show('pc-pane-manual', !quick);
+    }
+
+    $('pc-tab-quick').addEventListener('click', () => selectTab(true));
+    $('pc-tab-manual').addEventListener('click', () => selectTab(false));
+
+    $('pc-create').addEventListener('click', async (event) => {
+      const pat = $('pc-pat').value.trim();
+      if (!pat) return homebridge.toast.warning('Paste the personal access token first.', 'Paperclip');
+      try {
+        const { authorizeUrl } = await call('/create-app', { pat }, event.currentTarget);
+        $('pc-pat').value = '';
+        homebridge.toast.success('SmartThings app created. You can delete the token now.', 'Paperclip');
+        state = await call('/state');
+        render();
+        $('pc-auth-link').href = authorizeUrl;
+      } catch (error) {
+        if (/403|Apps/.test(error?.message || '')) selectTab(false);
+      }
+    });
+
+    $('pc-use-app').addEventListener('click', async (event) => {
+      try {
+        const { authorizeUrl } = await call('/use-app', {
+          clientId: $('pc-client-id').value,
+          clientSecret: $('pc-client-secret').value,
+          redirectUri: $('pc-redirect').value,
+        }, event.currentTarget);
+        $('pc-client-secret').value = '';
+        state = await call('/state');
+        render();
+        $('pc-auth-link').href = authorizeUrl;
+      } catch { /* toast already shown */ }
+    });
+
+    $('pc-exchange').addEventListener('click', async (event) => {
+      const pasted = $('pc-pasted').value.trim();
+      if (!pasted) return homebridge.toast.warning('Paste the address of the httpbin page first.', 'Paperclip');
+      try {
+        const result = await call('/exchange', { pasted }, event.currentTarget);
+        $('pc-pasted').value = '';
+        const created = await ensureConfigBlock();
+        homebridge.toast.success(
+          result.airConditioners.length
+            ? `Found ${result.airConditioners.map((a) => a.label).join(', ')}`
+            : 'Connected, but no air conditioner in that location.',
+          'Paperclip',
+        );
+        if (created) homebridge.toast.info('Restart Homebridge to load Paperclip.', 'Paperclip');
+        state = await call('/state');
+        render();
+        await loadDevices();
+      } catch { /* toast already shown */ }
+    });
+
+    $('pc-restart-app').addEventListener('click', async () => {
+      state = await call('/disconnect', { forgetApp: true });
+      render();
+    });
+
+    $('pc-reconnect').addEventListener('click', async () => {
+      state = await call('/disconnect', { forgetApp: false });
+      render();
+      const { authorizeUrl } = await call('/authorize-url');
+      $('pc-auth-link').href = authorizeUrl;
+    });
+
+    $('pc-disconnect').addEventListener('click', async () => {
+      state = await call('/disconnect', { forgetApp: true });
+      render();
+      homebridge.toast.info('Paperclip is no longer signed in to SmartThings.', 'Paperclip');
+    });
+
+    $('pc-refresh-devices').addEventListener('click', loadDevices);
+
+    load().catch(() => undefined);
+  })();
+</script>

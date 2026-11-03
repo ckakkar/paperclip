@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.env
+.env.*
+
+# Local Homebridge test instance and any credentials it writes.
+.homebridge/
+credentials.json
