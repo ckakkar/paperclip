@@ -5,12 +5,14 @@ import {
   clampSetpoint,
   coolMode,
   currentHeaterCoolerState,
+  CurrentState,
   defaultManualFan,
   dryMode,
   fanLevels,
   fanModeToSpeed,
   fanOnlyMode,
   fanSpeedStep,
+  FAN_ONLY_MODES,
   hasAutoFan,
   isSpecialMode,
   isSwinging,
@@ -41,7 +43,7 @@ const FAILURES_BEFORE_UNREACHABLE = 3;
 const DEFAULT_RATE_LIMIT_BACKOFF_MS = 60_000;
 
 /** Subtypes of the services Paperclip adds next to the main HeaterCooler. */
-const SUBTYPE = {
+export const SUBTYPE = {
   humidity: 'humidity',
   fanTile: 'fan-speed',
   filter: 'filter',
@@ -58,7 +60,9 @@ const SUBTYPE = {
 export interface AccessoryContext {
   deviceId: string;
   label: string;
-  /** Mode to return to when the Dry or Fan Only switch is turned off. */
+  /** "modes" for the companion accessory that holds the mode switches. */
+  kind?: 'main' | 'modes';
+  /** Mode to return to when Dry or fan-only is turned off. */
   modeBeforeSpecial?: string;
   /** Last display state we set, for units that never report it. */
   displayOn?: boolean;
@@ -73,6 +77,43 @@ export interface AccessoryDeps {
   config: PaperclipConfig;
 }
 
+export interface SwitchSpec {
+  subtype: string;
+  /** Short name, as a native accessory would use inside its own tile. */
+  label: string;
+}
+
+/** The mode switches this unit gets with this config. They live on a separate "Modes" accessory. */
+export function switchPlan(profile: AcProfile, config: PaperclipConfig): SwitchSpec[] {
+  const caps = profile.capabilities;
+  const plan: SwitchSpec[] = [];
+  for (const mode of config.optionalModeSwitches) {
+    if (mode !== 'off' && profile.optionalModes.includes(mode)) {
+      plan.push({ subtype: SUBTYPE.optionalMode(mode), label: optionalModeLabel(mode) });
+    }
+  }
+  if (config.dryModeSwitch && dryMode(profile)) {
+    plan.push({ subtype: SUBTYPE.dry, label: 'Dry' });
+  }
+  if (config.fanModeSwitch && fanOnlyMode(profile)) {
+    plan.push({ subtype: SUBTYPE.fanOnly, label: 'Fan Only' });
+  }
+  if (config.swingDirectionSwitches && profile.swing.vertical && profile.swing.horizontal) {
+    plan.push({ subtype: SUBTYPE.swingVertical, label: 'Swing Up/Down' });
+    plan.push({ subtype: SUBTYPE.swingHorizontal, label: 'Swing Left/Right' });
+  }
+  if (config.displaySwitch && (caps.has(CAP.lighting) || caps.has(CAP.execute))) {
+    plan.push({ subtype: SUBTYPE.display, label: 'Display' });
+  }
+  if (config.beepSwitch && caps.has(CAP.beep)) {
+    plan.push({ subtype: SUBTYPE.beep, label: 'Beep' });
+  }
+  if (config.autoCleanSwitch && caps.has(CAP.autoClean)) {
+    plan.push({ subtype: SUBTYPE.autoClean, label: 'Auto Clean' });
+  }
+  return plan;
+}
+
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
 
 export class PaperclipAirConditioner {
@@ -82,9 +123,11 @@ export class PaperclipAirConditioner {
   private readonly heaterCooler: Service;
   private readonly name: string;
 
-  /** Fan speeds on the AC tile's slider. Auto is included only when there is no Fan tile to hold an Auto toggle. */
+  /** With a Fan control, fan speed, Auto and swing live there, and fan-only mode is "Fan on, AC off". */
+  private readonly fanTile: boolean;
+  /** Fan speeds on the AC's own slider (only used when there is no Fan control). */
   private readonly coolerLevels: string[];
-  /** Fan speeds on the Fan tile's slider (never Auto; that is its own toggle). */
+  /** Fan speeds on the Fan control's slider (never Auto; that is its own toggle). */
   private readonly tileLevels: string[];
 
   private state: AcState;
@@ -110,6 +153,8 @@ export class PaperclipAirConditioner {
     readonly device: Device,
     readonly profile: AcProfile,
     initialStatus: DeviceStatus,
+    /** Companion accessory for the mode switches. Without it, the switches go on the main accessory. */
+    readonly modesAccessory?: PlatformAccessory<AccessoryContext>,
   ) {
     this.hap = deps.api.hap;
     this.C = this.hap.Characteristic;
@@ -117,17 +162,27 @@ export class PaperclipAirConditioner {
     this.name = device.label || device.name || 'Air Conditioner';
     this.state = parseState(initialStatus, profile);
 
-    const fanTile = deps.config.fanTile && profile.fanModes.length > 0;
-    this.tileLevels = fanTile ? fanLevels(profile, false) : [];
-    this.coolerLevels = fanLevels(profile, !(fanTile && hasAutoFan(profile)));
+    this.fanTile = deps.config.fanTile && profile.fanModes.length > 0;
+    this.tileLevels = this.fanTile ? fanLevels(profile, false) : [];
+    this.coolerLevels = this.fanTile ? [] : fanLevels(profile, true);
 
     accessory.context.deviceId = device.deviceId;
     accessory.context.label = this.name;
+    accessory.context.kind = 'main';
+    if (modesAccessory) {
+      modesAccessory.context.deviceId = device.deviceId;
+      modesAccessory.context.label = `${this.name} Modes`;
+      modesAccessory.context.kind = 'modes';
+    }
     this.rememberManualFan();
 
-    this.setupInformation();
+    this.setupInformation(accessory, this.device.deviceId);
+    if (modesAccessory) {
+      this.setupInformation(modesAccessory, `${this.device.deviceId}-modes`);
+    }
     this.heaterCooler = this.setupHeaterCooler();
-    this.setupExtras(fanTile);
+    this.setupCompanions();
+    this.setupSwitches();
     this.pushState();
   }
 
@@ -156,15 +211,15 @@ export class PaperclipAirConditioner {
   // Service setup
   // ---------------------------------------------------------------------------
 
-  private setupInformation(): void {
+  private setupInformation(accessory: PlatformAccessory, serial: string): void {
     const model = this.device.ocf?.modelNumber?.split('|')[0]?.trim()
       || this.device.deviceManufacturerCode
       || this.device.name
       || 'Air Conditioner';
-    this.accessory.getService(this.S.AccessoryInformation)!
+    accessory.getService(this.S.AccessoryInformation)!
       .setCharacteristic(this.C.Manufacturer, this.device.manufacturerName?.startsWith('Samsung') ? 'Samsung' : (this.device.manufacturerName || 'Samsung'))
       .setCharacteristic(this.C.Model, model.slice(0, 64))
-      .setCharacteristic(this.C.SerialNumber, this.device.deviceId)
+      .setCharacteristic(this.C.SerialNumber, serial)
       .setCharacteristic(this.C.FirmwareRevision, PLUGIN_VERSION);
   }
 
@@ -176,11 +231,11 @@ export class PaperclipAirConditioner {
     service.setCharacteristic(C.Name, this.name);
 
     service.getCharacteristic(C.Active)
-      .onGet(() => this.read(this.state.power ? C.Active.ACTIVE : C.Active.INACTIVE))
-      .onSet(value => this.setActive(value));
+      .onGet(() => this.read(this.coolerActive() ? C.Active.ACTIVE : C.Active.INACTIVE))
+      .onSet(value => this.setCoolerActive(Number(value) === C.Active.ACTIVE));
 
     service.getCharacteristic(C.CurrentHeaterCoolerState)
-      .onGet(() => this.read(currentHeaterCoolerState(this.state, this.profile)));
+      .onGet(() => this.read(this.coolerCurrentState()));
 
     const valid = validTargetStates(this.profile);
     const target = service.getCharacteristic(C.TargetHeaterCoolerState);
@@ -211,13 +266,13 @@ export class PaperclipAirConditioner {
       this.removeCharacteristic(service, C.HeatingThresholdTemperature);
     }
 
+    // With a Fan control, airflow lives only there, so there is one place to change it.
     if (this.coolerLevels.length > 0) {
       this.wireSpeed(service, this.coolerLevels);
     } else {
       this.removeCharacteristic(service, C.RotationSpeed);
     }
-
-    if (this.profile.swing.source) {
+    if (this.profile.swing.source && !this.fanTile) {
       this.wireSwingMode(service);
     } else {
       this.removeCharacteristic(service, C.SwingMode);
@@ -226,22 +281,19 @@ export class PaperclipAirConditioner {
     return service;
   }
 
-  private setupExtras(fanTile: boolean): void {
-    const cfg = this.deps.config;
-    const caps = this.profile.capabilities;
+  /** Fan, filter and humidity: shown inside the AC's own tile, like a native air conditioner. */
+  private setupCompanions(): void {
     const C = this.C;
     const keep = new Set<string>();
 
-    // Fan tile: speed slider, Auto toggle, swing.
-    if (fanTile) {
+    if (this.fanTile) {
       keep.add(SUBTYPE.fanTile);
-      const label = `${this.name} Fan`;
       const fan = this.accessory.getServiceById(this.S.Fanv2, SUBTYPE.fanTile)
-        ?? this.accessory.addService(this.S.Fanv2, label, SUBTYPE.fanTile);
-      this.nameService(fan, label);
+        ?? this.accessory.addService(this.S.Fanv2, 'Fan', SUBTYPE.fanTile);
+      this.nameService(fan, 'Fan', [`${this.name} Fan`]);
       fan.getCharacteristic(C.Active)
         .onGet(() => this.read(this.state.power ? C.Active.ACTIVE : C.Active.INACTIVE))
-        .onSet(value => this.setActive(value));
+        .onSet(value => this.setFanActive(Number(value) === C.Active.ACTIVE));
       fan.getCharacteristic(C.CurrentFanState)
         .onGet(() => this.read(this.state.power ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.INACTIVE));
       if (hasAutoFan(this.profile)) {
@@ -261,13 +313,11 @@ export class PaperclipAirConditioner {
       this.fanService = fan;
     }
 
-    // Filter life and "clean the filter" alert.
-    if (cfg.filterStatus && caps.has(CAP.dustFilter)) {
+    if (this.deps.config.filterStatus && this.profile.capabilities.has(CAP.dustFilter)) {
       keep.add(SUBTYPE.filter);
-      const label = `${this.name} Filter`;
       const filter = this.accessory.getServiceById(this.S.FilterMaintenance, SUBTYPE.filter)
-        ?? this.accessory.addService(this.S.FilterMaintenance, label, SUBTYPE.filter);
-      this.nameService(filter, label);
+        ?? this.accessory.addService(this.S.FilterMaintenance, 'Filter', SUBTYPE.filter);
+      this.nameService(filter, 'Filter', [`${this.name} Filter`]);
       filter.getCharacteristic(C.FilterChangeIndication).onGet(() => this.read(this.filterChange()));
       filter.getCharacteristic(C.FilterLifeLevel).onGet(() => this.read(this.filterLife()));
       filter.getCharacteristic(C.ResetFilterIndication).onSet(() =>
@@ -276,82 +326,97 @@ export class PaperclipAirConditioner {
       this.filterService = filter;
     }
 
-    // Humidity
-    if (cfg.humiditySensor && caps.has(CAP.humidity)) {
+    if (this.deps.config.humiditySensor && this.profile.capabilities.has(CAP.humidity)) {
       keep.add(SUBTYPE.humidity);
-      const label = `${this.name} Humidity`;
-      this.humidityService = this.accessory.getServiceById(this.S.HumiditySensor, SUBTYPE.humidity)
-        ?? this.accessory.addService(this.S.HumiditySensor, label, SUBTYPE.humidity);
-      this.nameService(this.humidityService, label);
-      this.humidityService.getCharacteristic(C.CurrentRelativeHumidity)
-        .onGet(() => this.read(this.state.humidity ?? 0));
+      const humidity = this.accessory.getServiceById(this.S.HumiditySensor, SUBTYPE.humidity)
+        ?? this.accessory.addService(this.S.HumiditySensor, 'Humidity', SUBTYPE.humidity);
+      this.nameService(humidity, 'Humidity', [`${this.name} Humidity`]);
+      humidity.getCharacteristic(C.CurrentRelativeHumidity).onGet(() => this.read(this.state.humidity ?? 0));
+      this.heaterCooler.addLinkedService(humidity);
+      this.humidityService = humidity;
     }
 
-    // Samsung optional modes (WindFree, Sleep, Quiet, Turbo…). The unit runs one at a time.
-    for (const mode of cfg.optionalModeSwitches) {
-      if (mode === 'off') {
-        continue;
-      }
-      if (!this.profile.optionalModes.includes(mode)) {
-        this.deps.log.debug(`${this.name}: no "${mode}" mode on this unit; no switch added.`);
-        continue;
-      }
-      this.addSwitch(SUBTYPE.optionalMode(mode), optionalModeLabel(mode), keep,
-        () => this.state.power === true && this.state.optionalMode === mode,
-        on => this.setOptionalMode(mode, on));
-    }
-
-    const dry = dryMode(this.profile);
-    if (cfg.dryModeSwitch && dry) {
-      this.addSwitch(SUBTYPE.dry, 'Dry', keep,
-        () => this.state.power === true && this.state.mode === dry,
-        on => this.setSpecialMode(dry, on));
-    }
-
-    const fanOnly = fanOnlyMode(this.profile);
-    if (cfg.fanModeSwitch && fanOnly) {
-      this.addSwitch(SUBTYPE.fanOnly, 'Fan Only', keep,
-        () => this.state.power === true && this.state.mode === fanOnly,
-        on => this.setSpecialMode(fanOnly, on));
-    }
-
-    const swing = this.profile.swing;
-    if (cfg.swingDirectionSwitches && swing.vertical && swing.horizontal) {
-      this.addSwitch(SUBTYPE.swingVertical, 'Swing Up/Down', keep,
-        () => this.state.swingVertical ?? false,
-        on => this.setSwing({ vertical: on, horizontal: this.state.swingHorizontal ?? false }, 'vertical'));
-      this.addSwitch(SUBTYPE.swingHorizontal, 'Swing Left/Right', keep,
-        () => this.state.swingHorizontal ?? false,
-        on => this.setSwing({ vertical: this.state.swingVertical ?? false, horizontal: on }, 'horizontal'));
-    }
-
-    if (cfg.displaySwitch && (caps.has(CAP.lighting) || caps.has(CAP.execute))) {
-      this.addSwitch(SUBTYPE.display, 'Display', keep,
-        () => this.state.lighting ?? this.accessory.context.displayOn ?? true,
-        on => this.setDisplay(on));
-    }
-
-    if (cfg.beepSwitch && caps.has(CAP.beep)) {
-      this.addSwitch(SUBTYPE.beep, 'Beep', keep,
-        () => this.state.beep ?? true,
-        on => this.queue([{ capability: CAP.beep, command: on ? 'on' : 'off' }], { beep: on }));
-    }
-
-    if (cfg.autoCleanSwitch && caps.has(CAP.autoClean)) {
-      this.addSwitch(SUBTYPE.autoClean, 'Auto Clean', keep,
-        () => this.state.autoClean ?? false,
-        on => this.queue([{ capability: CAP.autoClean, command: 'setAutoCleaningMode', arguments: [on ? 'on' : 'off'] }], { autoClean: on }));
-    }
-
-    // Drop services from a previous configuration so they don't linger as "No Response" tiles.
-    const managed = new Set([this.S.Switch.UUID, this.S.HumiditySensor.UUID, this.S.Fanv2.UUID, this.S.FilterMaintenance.UUID]);
+    // Switches belong on the Modes accessory; only keep them here when there isn't one.
+    const companions = new Set([this.S.Fanv2.UUID, this.S.FilterMaintenance.UUID, this.S.HumiditySensor.UUID]);
     for (const service of [...this.accessory.services]) {
-      if (managed.has(service.UUID) && !keep.has(service.subtype ?? '')) {
-        this.deps.log.debug(`${this.name}: removing unused ${service.displayName} service`);
-        this.heaterCooler.removeLinkedService(service);
-        this.accessory.removeService(service);
+      const strayCompanion = companions.has(service.UUID) && !keep.has(service.subtype ?? '');
+      const straySwitch = service.UUID === this.S.Switch.UUID && this.modesAccessory !== undefined;
+      if (strayCompanion || straySwitch) {
+        this.removeService(this.accessory, service);
       }
     }
+  }
+
+  private setupSwitches(): void {
+    const target = this.modesAccessory ?? this.accessory;
+    const plan = switchPlan(this.profile, this.deps.config);
+    const handlers = this.switchHandlers();
+    for (const spec of plan) {
+      const handler = handlers[spec.subtype] ?? this.optionalModeHandler(spec.subtype);
+      if (!handler) {
+        continue;
+      }
+      const service = target.getServiceById(this.S.Switch, spec.subtype)
+        ?? target.addService(this.S.Switch, spec.label, spec.subtype);
+      this.nameService(service, spec.label, [`${this.name} ${spec.label}`, `${this.name} ${legacyLabel(spec)}`]);
+      service.getCharacteristic(this.C.On)
+        .onGet(() => this.read(handler.read() ?? false))
+        .onSet(value => handler.write(Boolean(value)));
+      this.extras.push({ service, read: handler.read });
+    }
+
+    const planned = new Set(plan.map(s => s.subtype));
+    for (const service of [...target.services]) {
+      if (service.UUID === this.S.Switch.UUID && !planned.has(service.subtype ?? '')) {
+        this.removeService(target, service);
+      }
+    }
+  }
+
+  private switchHandlers(): Record<string, { read: () => boolean | undefined; write: (on: boolean) => Promise<void> }> {
+    const dry = dryMode(this.profile);
+    const fanOnly = fanOnlyMode(this.profile);
+    return {
+      [SUBTYPE.dry]: {
+        read: () => this.state.power === true && this.state.mode === dry,
+        write: on => this.setSpecialMode(dry!, on),
+      },
+      [SUBTYPE.fanOnly]: {
+        read: () => this.state.power === true && this.state.mode === fanOnly,
+        write: on => this.setSpecialMode(fanOnly!, on),
+      },
+      [SUBTYPE.swingVertical]: {
+        read: () => this.state.swingVertical ?? false,
+        write: on => this.setSwing({ vertical: on, horizontal: this.state.swingHorizontal ?? false }, 'vertical'),
+      },
+      [SUBTYPE.swingHorizontal]: {
+        read: () => this.state.swingHorizontal ?? false,
+        write: on => this.setSwing({ vertical: this.state.swingVertical ?? false, horizontal: on }, 'horizontal'),
+      },
+      [SUBTYPE.display]: {
+        read: () => this.state.lighting ?? this.accessory.context.displayOn ?? true,
+        write: on => this.setDisplay(on),
+      },
+      [SUBTYPE.beep]: {
+        read: () => this.state.beep ?? true,
+        write: on => this.queue([{ capability: CAP.beep, command: on ? 'on' : 'off' }], { beep: on }),
+      },
+      [SUBTYPE.autoClean]: {
+        read: () => this.state.autoClean ?? false,
+        write: on => this.queue([{ capability: CAP.autoClean, command: 'setAutoCleaningMode', arguments: [on ? 'on' : 'off'] }], { autoClean: on }),
+      },
+    };
+  }
+
+  private optionalModeHandler(subtype: string) {
+    const mode = subtype.startsWith('mode-') ? subtype.slice('mode-'.length) : undefined;
+    if (!mode) {
+      return undefined;
+    }
+    return {
+      read: () => this.state.power === true && this.state.optionalMode === mode,
+      write: (on: boolean) => this.setOptionalMode(mode, on),
+    };
   }
 
   private wireSpeed(service: Service, levels: string[]): void {
@@ -369,30 +434,27 @@ export class PaperclipAirConditioner {
       .onSet(value => this.setSwing(swingFor(Number(value) === C.SwingMode.SWING_ENABLED, this.deps.config.swingMode, this.profile)));
   }
 
-  private addSwitch(
-    subtype: string,
-    label: string,
-    keep: Set<string>,
-    read: () => boolean | undefined,
-    write: (on: boolean) => Promise<void>,
-  ): void {
-    keep.add(subtype);
-    const displayName = `${this.name} ${label}`;
-    const service = this.accessory.getServiceById(this.S.Switch, subtype)
-      ?? this.accessory.addService(this.S.Switch, displayName, subtype);
-    this.nameService(service, displayName);
-    service.getCharacteristic(this.C.On)
-      .onGet(() => this.read(read() ?? false))
-      .onSet(value => write(Boolean(value)));
-    this.extras.push({ service, read });
-  }
-
-  private nameService(service: Service, name: string): void {
+  /**
+   * Sets the service name. The Home app's own name (ConfiguredName) is only overwritten while it
+   * still holds a name Paperclip generated, so a rename made in the Home app is kept.
+   */
+  private nameService(service: Service, name: string, generatedNames: string[] = []): void {
     service.setCharacteristic(this.C.Name, name);
     if (!service.testCharacteristic(this.C.ConfiguredName)) {
       service.addOptionalCharacteristic(this.C.ConfiguredName);
       service.setCharacteristic(this.C.ConfiguredName, name);
+      return;
     }
+    const current = service.getCharacteristic(this.C.ConfiguredName).value;
+    if (typeof current !== 'string' || current === '' || generatedNames.includes(current)) {
+      service.setCharacteristic(this.C.ConfiguredName, name);
+    }
+  }
+
+  private removeService(accessory: PlatformAccessory, service: Service): void {
+    this.deps.log.debug(`${this.name}: removing ${service.displayName}`);
+    this.heaterCooler?.removeLinkedService(service);
+    accessory.removeService(service);
   }
 
   private removeCharacteristic(service: Service, characteristic: WithUUID<new () => Characteristic>): void {
@@ -411,6 +473,19 @@ export class PaperclipAirConditioner {
       throw new this.hap.HapStatusError(this.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
     }
     return value;
+  }
+
+  private isFanOnly(): boolean {
+    return this.state.mode !== undefined && FAN_ONLY_MODES.includes(this.state.mode);
+  }
+
+  /** The AC tile is on while the unit cools (or dries); fan-only shows as "AC off, Fan on". */
+  private coolerActive(): boolean {
+    return this.state.power === true && !(this.fanTile && this.isFanOnly());
+  }
+
+  private coolerCurrentState(): number {
+    return this.coolerActive() ? currentHeaterCoolerState(this.state, this.profile) : CurrentState.INACTIVE;
   }
 
   private displayedSetpoint(): number {
@@ -447,13 +522,59 @@ export class PaperclipAirConditioner {
     }
   }
 
+  /** Mode to cool in when leaving Dry or fan-only. */
+  private resumeMode(): string {
+    const previous = this.accessory.context.modeBeforeSpecial;
+    return previous && this.profile.modes.includes(previous) && !isSpecialMode(previous)
+      ? previous
+      : coolMode(this.profile) ?? targetStateToMode(validTargetStates(this.profile)[0], this.profile) ?? 'cool';
+  }
+
   // ---------------------------------------------------------------------------
   // Writes
   // ---------------------------------------------------------------------------
 
-  private async setActive(value: CharacteristicValue): Promise<void> {
-    const on = Number(value) === this.C.Active.ACTIVE;
-    await this.queue([{ capability: CAP.switch, command: on ? 'on' : 'off' }], { power: on });
+  private async setCoolerActive(on: boolean): Promise<void> {
+    if (!on) {
+      if (this.fanTile && this.isFanOnly() && this.state.power) {
+        return; // Already "off" from the AC's point of view; the Fan control owns fan-only.
+      }
+      await this.queue([{ capability: CAP.switch, command: 'off' }], { power: false });
+      return;
+    }
+    if (this.fanTile && this.isFanOnly()) {
+      const mode = this.resumeMode();
+      await this.queue([
+        { capability: CAP.switch, command: 'on' },
+        { capability: CAP.mode, command: 'setAirConditionerMode', arguments: [mode] },
+      ], { power: true, mode });
+      return;
+    }
+    await this.queue([{ capability: CAP.switch, command: 'on' }], { power: true });
+  }
+
+  /** Fan on while the AC is off runs fan-only; Fan off turns the whole unit off. */
+  private async setFanActive(on: boolean): Promise<void> {
+    if (!on) {
+      await this.queue([{ capability: CAP.switch, command: 'off' }], { power: false });
+      return;
+    }
+    if (this.state.power === true) {
+      return;
+    }
+    const fanOnly = fanOnlyMode(this.profile);
+    if (!fanOnly) {
+      await this.queue([{ capability: CAP.switch, command: 'on' }], { power: true });
+      return;
+    }
+    if (this.state.mode && !isSpecialMode(this.state.mode)) {
+      this.accessory.context.modeBeforeSpecial = this.state.mode;
+      this.persistContext();
+    }
+    await this.queue([
+      { capability: CAP.switch, command: 'on' },
+      { capability: CAP.mode, command: 'setAirConditionerMode', arguments: [fanOnly] },
+    ], { power: true, mode: fanOnly });
   }
 
   private async setTargetState(value: CharacteristicValue): Promise<void> {
@@ -552,10 +673,7 @@ export class PaperclipAirConditioner {
     if (this.state.mode !== mode) {
       return;
     }
-    const previous = this.accessory.context.modeBeforeSpecial;
-    const back = previous && this.profile.modes.includes(previous) && !isSpecialMode(previous)
-      ? previous
-      : coolMode(this.profile) ?? targetStateToMode(validTargetStates(this.profile)[0], this.profile) ?? 'cool';
+    const back = this.resumeMode();
     await this.queue([{ capability: CAP.mode, command: 'setAirConditionerMode', arguments: [back] }], { mode: back });
   }
 
@@ -701,13 +819,12 @@ export class PaperclipAirConditioner {
     const C = this.C;
     const s = this.heaterCooler;
     const state = this.state;
-    const active = state.power ? C.Active.ACTIVE : C.Active.INACTIVE;
     const swing = isSwinging(state) ? C.SwingMode.SWING_ENABLED : C.SwingMode.SWING_DISABLED;
 
     if (state.power !== undefined) {
-      s.updateCharacteristic(C.Active, active);
+      s.updateCharacteristic(C.Active, this.coolerActive() ? C.Active.ACTIVE : C.Active.INACTIVE);
     }
-    s.updateCharacteristic(C.CurrentHeaterCoolerState, currentHeaterCoolerState(state, this.profile));
+    s.updateCharacteristic(C.CurrentHeaterCoolerState, this.coolerCurrentState());
     s.updateCharacteristic(C.TargetHeaterCoolerState, modeToTargetState(state.mode, this.profile));
     if (state.currentTemperature !== undefined) {
       s.updateCharacteristic(C.CurrentTemperature, state.currentTemperature);
@@ -721,14 +838,14 @@ export class PaperclipAirConditioner {
     if (this.coolerLevels.length > 0 && state.fanMode !== undefined) {
       s.updateCharacteristic(C.RotationSpeed, this.speedFor(this.coolerLevels));
     }
-    if (this.profile.swing.source) {
+    if (this.profile.swing.source && !this.fanTile) {
       s.updateCharacteristic(C.SwingMode, swing);
     }
 
     const fan = this.fanService;
     if (fan) {
       if (state.power !== undefined) {
-        fan.updateCharacteristic(C.Active, active);
+        fan.updateCharacteristic(C.Active, state.power ? C.Active.ACTIVE : C.Active.INACTIVE);
         fan.updateCharacteristic(C.CurrentFanState, state.power ? C.CurrentFanState.BLOWING_AIR : C.CurrentFanState.INACTIVE);
       }
       if (state.fanMode !== undefined) {
@@ -759,6 +876,11 @@ export class PaperclipAirConditioner {
     this.heaterCooler.updateCharacteristic(this.C.Active, error);
     this.fanService?.updateCharacteristic(this.C.Active, error);
   }
+}
+
+/** The long names 0.2.0 generated, so they can be replaced by the short ones. */
+function legacyLabel(spec: SwitchSpec): string {
+  return spec.subtype === SUBTYPE.optionalMode('speed') ? 'Fast Cool' : spec.label;
 }
 
 function commandKey(command: Command): string {

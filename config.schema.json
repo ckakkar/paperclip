@@ -23,10 +23,10 @@
         "description": "How often Paperclip reads the AC from SmartThings. Changes you make in HomeKit are sent immediately either way."
       },
       "fanTile": {
-        "title": "Fan tile (speed slider + Auto)",
+        "title": "Fan control (speed, Auto, Oscillate)",
         "type": "boolean",
         "default": true,
-        "description": "A separate fan control with Low, Medium, High and Turbo, plus an Auto toggle. Easier to find in the Home app than the fan speed inside the AC tile."
+        "description": "Shown inside the AC tile with Low, Medium, High and Turbo, an Auto toggle and Oscillate. Turning the Fan on while the AC is off runs fan-only mode."
       },
       "optionalModeSwitches": {
         "title": "Samsung modes to show as switches",
@@ -55,7 +55,7 @@
             "longWind"
           ]
         },
-        "description": "Only the modes your AC supports appear (for example Sleep, Quiet and Turbo). Untick any you don't want."
+        "description": "Only the modes your AC supports appear. Mode switches sit on a separate \"Modes\" accessory, so the AC's own tile stays clean."
       },
       "dryModeSwitch": {
         "title": "Dry (dehumidify) switch",
@@ -64,9 +64,10 @@
         "description": "HomeKit has no dry mode, so it gets its own switch. Turning it off returns the AC to its previous mode."
       },
       "fanModeSwitch": {
-        "title": "Fan-only switch",
+        "title": "Fan Only switch",
         "type": "boolean",
-        "default": false
+        "default": false,
+        "description": "Usually not needed: turning the Fan on while the AC is off already runs fan-only."
       },
       "humiditySensor": {
         "title": "Humidity sensor",
@@ -125,8 +126,8 @@
       "swingDirectionSwitches": {
         "title": "Swing Up/Down and Swing Left/Right switches",
         "type": "boolean",
-        "default": true,
-        "description": "Only on units that swing both ways. The Oscillate toggle uses the direction chosen above."
+        "default": false,
+        "description": "Separate up/down and left/right switches on the Modes accessory. The Fan's Oscillate toggle uses the direction chosen above."
       },
       "excludeDevices": {
         "title": "Hide these air conditioners",

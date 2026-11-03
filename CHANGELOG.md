@@ -6,8 +6,9 @@ All notable changes to this project are documented here. This project follows [S
 
 Built from what a real 2025 Samsung split AC (SmartThings model DA-AC-RAC-01011, sold in India) reports to SmartThings.
 
-- **Fan tile**: a separate fan control with Low, Medium, High and Turbo speeds and an Auto toggle. The AC tile's own speed slider now uses the same four speeds. Turn off `fanTile` to go back to one slider with Auto as its lowest step.
-- **Swing on newer units**: supports `samsungce.airConditionerAirFlowDirection` (up/down and left/right swing), which 2023+ units use in place of `fanOscillationMode`. Adds optional **Swing Up/Down** and **Swing Left/Right** switches.
+- **Native layout**: the AC's tile now holds only the thermostat, a **Fan** control and filter status. Mode switches (Sleep, Quiet, Turbo, Dry, Display…) move to a separate **Modes** accessory, with short names ("Sleep", not "Samsung Room A/C Sleep"). Names you change in the Home app are kept.
+- **Fan control**: Low, Medium, High and Turbo, an Auto toggle and Oscillate. Turning the Fan on while the AC is off runs fan-only mode; turning it off turns the unit off. Turn off `fanTile` to go back to one slider on the AC with Auto as its lowest step.
+- **Swing on newer units**: supports `samsungce.airConditionerAirFlowDirection` (up/down and left/right swing), which 2023+ units use in place of `fanOscillationMode`. Optional **Swing Up/Down** and **Swing Left/Right** switches (`swingDirectionSwitches`, off by default).
 - **Samsung modes on by default**: every mode the unit supports gets a switch (for example Sleep, Quiet and Turbo). The "speed" option is now labelled **Turbo**, as on the remote.
 - **Fan Only** works on units that call the mode `fan`.
 - **Filter life**: a filter tile with remaining life and a "clean filter" alert, from `custom.dustFilter`. Resetting it in HomeKit resets the counter.

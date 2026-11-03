@@ -1,6 +1,6 @@
 import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig } from 'homebridge';
 
-import { PaperclipAirConditioner, type AccessoryContext } from './accessory.js';
+import { PaperclipAirConditioner, switchPlan, type AccessoryContext } from './accessory.js';
 import { buildProfile, describeProfile, isAirConditioner } from './ac/profile.js';
 import { parseConfig, type PaperclipConfig } from './config.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -107,10 +107,12 @@ export class PaperclipPlatform implements DynamicPlatformPlugin {
       if (this.isExcluded(device)) {
         this.log.info(`${label}: excluded in the config, not added to HomeKit.`);
         this.removeAccessory(uuid, 'excluded in the config');
+        this.removeAccessory(this.uuidFor(device.deviceId, 'modes'), 'excluded in the config');
         continue;
       }
 
       seen.add(uuid);
+      seen.add(this.uuidFor(device.deviceId, 'modes'));
       if (this.active.has(uuid)) {
         continue;
       }
@@ -144,10 +146,16 @@ export class PaperclipPlatform implements DynamicPlatformPlugin {
     const label = device.label || device.name || 'Air Conditioner';
     this.log.info(`${label}: ${describeProfile(profile)}`);
 
-    let accessory = this.cached.get(uuid);
-    const isNew = !accessory;
-    if (!accessory) {
-      accessory = new this.api.platformAccessory<AccessoryContext>(label, uuid, this.api.hap.Categories.AIR_CONDITIONER);
+    const { accessory, isNew } = this.accessoryFor(uuid, label, this.api.hap.Categories.AIR_CONDITIONER);
+
+    // Mode switches (Sleep, Turbo, Dry…) get their own accessory, so the AC's tile only shows
+    // the thermostat and fan controls, like a native air conditioner.
+    const modesUuid = this.uuidFor(device.deviceId, 'modes');
+    let modes: { accessory: PlatformAccessory<AccessoryContext>; isNew: boolean } | undefined;
+    if (switchPlan(profile, this.config).length > 0) {
+      modes = this.accessoryFor(modesUuid, `${label} Modes`, this.api.hap.Categories.SWITCH);
+    } else {
+      this.removeAccessory(modesUuid, 'no mode switches are turned on');
     }
 
     const handler = new PaperclipAirConditioner(
@@ -156,17 +164,34 @@ export class PaperclipPlatform implements DynamicPlatformPlugin {
       device,
       profile,
       status,
+      modes?.accessory,
     );
     this.active.set(uuid, handler);
-    this.cached.set(uuid, accessory);
 
-    if (isNew) {
-      this.log.info(`${label}: adding to HomeKit.`);
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    } else {
-      this.api.updatePlatformAccessories([accessory]);
+    const fresh: PlatformAccessory[] = [];
+    const known: PlatformAccessory[] = [];
+    (isNew ? fresh : known).push(accessory);
+    if (modes) {
+      (modes.isNew ? fresh : known).push(modes.accessory);
+    }
+    if (fresh.length) {
+      this.log.info(`${label}: adding ${fresh.map(a => `"${a.displayName}"`).join(' and ')} to HomeKit.`);
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, fresh);
+    }
+    if (known.length) {
+      this.api.updatePlatformAccessories(known);
     }
     handler.start();
+  }
+
+  private accessoryFor(uuid: string, name: string, category: number) {
+    let accessory = this.cached.get(uuid);
+    const isNew = !accessory;
+    if (!accessory) {
+      accessory = new this.api.platformAccessory<AccessoryContext>(name, uuid, category);
+      this.cached.set(uuid, accessory);
+    }
+    return { accessory, isNew };
   }
 
   private handleDiscoveryError(error: Error): void {
@@ -213,8 +238,8 @@ export class PaperclipPlatform implements DynamicPlatformPlugin {
     this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
   }
 
-  private uuidFor(deviceId: string): string {
-    return this.api.hap.uuid.generate(`${PLUGIN_NAME}:${deviceId}`);
+  private uuidFor(deviceId: string, kind: 'main' | 'modes' = 'main'): string {
+    return this.api.hap.uuid.generate(kind === 'main' ? `${PLUGIN_NAME}:${deviceId}` : `${PLUGIN_NAME}:${deviceId}:${kind}`);
   }
 
   private shutdown(): void {

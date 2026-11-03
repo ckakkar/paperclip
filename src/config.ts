@@ -21,7 +21,7 @@ export interface PaperclipConfig {
   displaySwitch: boolean;
   autoCleanSwitch: boolean;
   beepSwitch: boolean;
-  /** Separate "Swing Up/Down" and "Swing Left/Right" switches, on units that swing both ways. */
+  /** Separate "Swing Up/Down" and "Swing Left/Right" switches, on units that swing both ways (Oscillate on the Fan covers most uses). */
   swingDirectionSwitches: boolean;
   /** Filter life and a "clean filter" alert, from the unit's dust filter counter. */
   filterStatus: boolean;
@@ -48,7 +48,7 @@ export const DEFAULTS: Omit<PaperclipConfig, 'credentials'> = {
   displaySwitch: false,
   autoCleanSwitch: false,
   beepSwitch: false,
-  swingDirectionSwitches: true,
+  swingDirectionSwitches: false,
   filterStatus: true,
   swingMode: 'all',
   removeStaleAccessories: true,

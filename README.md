@@ -18,20 +18,23 @@ iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi�
 
 ## What you get
 
+Paperclip adds two accessories per AC, laid out like a native HomeKit air conditioner:
+
+- **The AC**: the temperature dial and Cool/Auto, with a **Fan** control and filter status inside the same tile.
+- **Modes**: a separate tile holding Samsung's extras as short-named switches, so they don't crowd the AC.
+
 | In the Home app | Samsung feature |
 |---|---|
 | On / off | Power |
 | Cool · Auto (· Heat on heat pumps) | AC mode, limited to the modes your unit reports |
 | Target temperature | Set point, using your unit's own range (16–30 °C on most models) |
 | Current temperature | Indoor temperature sensor |
-| **Fan** tile | Low → Medium → High → Turbo, plus an **Auto** toggle |
-| Oscillate | Swing, both directions by default (up/down only or left/right only in the settings) |
-| **Swing Up/Down**, **Swing Left/Right** switches | Each swing direction on its own, on units that have both |
-| **Sleep**, **Quiet**, **Turbo**, **WindFree**… switches | Samsung's optional modes. You get whichever ones your unit supports, and only one runs at a time |
-| **Dry** switch | Dehumidify. Turning it off returns the AC to its previous mode |
-| **Filter** | Filter life left, and an alert when it needs cleaning |
-| Humidity sensor | Indoor humidity, if the unit measures it |
-| Fan Only, Display, Beep, Auto Clean switches | Optional |
+| **Fan** (inside the AC) | Low → Medium → High → Turbo, an **Auto** toggle and **Oscillate**. Fan on while the AC is off = fan-only mode |
+| **Filter** (inside the AC) | Filter life left, and an alert when it needs cleaning |
+| Humidity (inside the AC) | Indoor humidity, if the unit measures it |
+| **Modes**: Sleep, Quiet, Turbo, WindFree… | Samsung's optional modes, whichever your unit supports. Only one runs at a time |
+| **Modes**: Dry | Dehumidify. Turning it off returns the AC to its previous mode |
+| **Modes**: Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default |
 
 Paperclip only adds a control when your AC actually reports it, so you don't get tiles that always say "No Response".
 
@@ -117,12 +120,12 @@ All of these are in the settings page below the connection steps. Defaults are i
 |---|---|---|
 | `pollInterval` | `20` | Seconds between status refreshes (10–600). Commands are always sent immediately. |
 | `optionalModeSwitches` | all | Samsung modes as switches: `windFree`, `windFreeSleep`, `sleep`, `quiet`, `speed` (Turbo), `smart`, `comfort`, `longWind`. Only supported ones appear. |
-| `fanTile` | `true` | Separate Fan tile with a speed slider and an Auto toggle. |
-| `swingDirectionSwitches` | `true` | Swing Up/Down and Swing Left/Right switches. |
+| `fanTile` | `true` | Fan control inside the AC: speed, Auto and Oscillate. |
+| `swingDirectionSwitches` | `false` | Swing Up/Down and Swing Left/Right switches on the Modes accessory. |
 | `filterStatus` | `true` | Filter life and cleaning alert. |
 | `beepSwitch` | `false` | Turn the indoor unit's beep on or off. |
 | `dryModeSwitch` | `true` | Dry (dehumidify) switch. |
-| `fanModeSwitch` | `false` | Fan-only switch. |
+| `fanModeSwitch` | `false` | Fan Only switch. Not needed with the Fan control. |
 | `humiditySensor` | `true` | Humidity sensor tile. |
 | `displaySwitch` | `false` | Indoor unit display light. |
 | `autoCleanSwitch` | `false` | Auto Clean switch. |
