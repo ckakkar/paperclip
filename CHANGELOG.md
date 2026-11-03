@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.4.0 (2026-11-04)
+
+- **One tile per AC.** The separate Settings/Modes accessory is gone. Its switches (Display, Beep, Auto Clean, swing axes) now sit inside the AC's tile with the mode toggles, and the old accessory is removed from HomeKit.
+- Toggles follow the Samsung app's order: Turbo, Quiet, Sleep, then Dry and the settings.
+- **Dry shows as Cool** in the mode menu, not Auto, and the AC reads as cooling. Samsung's Dry is a dehumidifying cool, and Auto is now a real choice in the menu.
+
 ## 0.3.0 (2026-11-04)
 
 Closer to the Samsung SmartThings app's own page.

@@ -61,7 +61,7 @@
         "title": "Dry (dehumidify) switch",
         "type": "boolean",
         "default": true,
-        "description": "Apple's mode menu can only hold Off, Cool, Auto and Heat, so Dry sits under the dial instead. Turning it off returns to the previous mode."
+        "description": "Apple's mode menu only has Off, Cool, Auto and Heat, so Dry is a toggle under the dial. While it's on, the menu shows Cool. Turning it off returns to the previous mode."
       },
       "fanModeSwitch": {
         "title": "Fan Only switch",
@@ -79,12 +79,13 @@
         "title": "Display light switch",
         "type": "boolean",
         "default": false,
-        "description": "On the separate Settings accessory, with Beep and Auto Clean."
+        "description": "Turns the indoor unit's temperature display on or off. Shown inside the AC's tile."
       },
       "autoCleanSwitch": {
         "title": "Auto Clean switch",
         "type": "boolean",
-        "default": false
+        "default": false,
+        "description": "Shown inside the AC's tile. Most people set this once in the Samsung app instead."
       },
       "beepSwitch": {
         "title": "Beep switch",
@@ -127,7 +128,7 @@
         "title": "Swing Up/Down and Swing Left/Right switches",
         "type": "boolean",
         "default": false,
-        "description": "Separate up/down and left/right switches on the Settings accessory. The Fan's Oscillate toggle uses the direction chosen above."
+        "description": "Separate up/down and left/right switches inside the AC's tile. The Fan's Oscillate toggle uses the direction chosen above."
       },
       "excludeDevices": {
         "title": "Hide these air conditioners",

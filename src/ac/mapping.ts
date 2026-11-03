@@ -65,8 +65,11 @@ export function modeToTargetState(mode: string | undefined, profile: AcProfile):
     state = TargetState.HEAT;
   } else if (mode && AUTO_MODES.includes(mode)) {
     state = TargetState.AUTO;
+  } else if (mode && DRY_MODES.includes(mode)) {
+    // Dry is Samsung's dehumidifying cool; showing Auto would claim a mode the unit isn't in.
+    state = valid.includes(TargetState.COOL) ? TargetState.COOL : valid[0];
   } else {
-    // Dry / fan only: show Auto when HomeKit can show it, otherwise Cool.
+    // Fan only (when there's no Fan control to show it): the closest HomeKit has is Auto.
     state = valid.includes(TargetState.AUTO) ? TargetState.AUTO : TargetState.COOL;
   }
   return valid.includes(state) ? state : valid[valid.length - 1];
@@ -92,7 +95,7 @@ export function currentHeaterCoolerState(state: AcState, profile: AcProfile): nu
   const { mode, currentTemperature: current, targetTemperature: target } = state;
   const known = typeof current === 'number' && typeof target === 'number';
 
-  if (mode && COOL_MODES.includes(mode)) {
+  if (mode && (COOL_MODES.includes(mode) || DRY_MODES.includes(mode))) {
     return !known || current! > target! ? CurrentState.COOLING : CurrentState.IDLE;
   }
   if (mode && HEAT_MODES.includes(mode)) {

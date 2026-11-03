@@ -102,8 +102,9 @@ describe('HomeKit mapping', () => {
     expect(targetStateToMode(TargetState.HEAT, heatPump)).toBe('heat');
   });
 
-  it('shows dry and fan-only as Auto, or Cool for units without Auto', () => {
-    expect(modeToTargetState('dry', profile)).toBe(TargetState.AUTO);
+  it('shows Dry as Cool, and fan-only as Auto (or Cool for units without Auto)', () => {
+    expect(modeToTargetState('dry', profile)).toBe(TargetState.COOL);
+    expect(modeToTargetState('wind', profile)).toBe(TargetState.AUTO);
     const coolOnly = { ...profile, modes: ['cool', 'dry', 'wind'] };
     expect(modeToTargetState('wind', coolOnly)).toBe(TargetState.COOL);
     expect(validTargetStates(coolOnly)).toEqual([TargetState.COOL]);
@@ -113,7 +114,8 @@ describe('HomeKit mapping', () => {
     expect(currentHeaterCoolerState({ power: false, mode: 'cool' }, profile)).toBe(CurrentState.INACTIVE);
     expect(currentHeaterCoolerState({ power: true, mode: 'cool', currentTemperature: 29, targetTemperature: 24 }, profile)).toBe(CurrentState.COOLING);
     expect(currentHeaterCoolerState({ power: true, mode: 'cool', currentTemperature: 23, targetTemperature: 24 }, profile)).toBe(CurrentState.IDLE);
-    expect(currentHeaterCoolerState({ power: true, mode: 'dry' }, profile)).toBe(CurrentState.IDLE);
+    expect(currentHeaterCoolerState({ power: true, mode: 'dry' }, profile)).toBe(CurrentState.COOLING);
+    expect(currentHeaterCoolerState({ power: true, mode: 'wind' }, profile)).toBe(CurrentState.IDLE);
     expect(currentHeaterCoolerState({ power: true, mode: 'auto', currentTemperature: 20, targetTemperature: 24 }, profile)).toBe(CurrentState.IDLE);
     expect(currentHeaterCoolerState({ power: true, mode: 'auto', currentTemperature: 20, targetTemperature: 24 }, heatPump)).toBe(CurrentState.HEATING);
   });
