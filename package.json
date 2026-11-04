@@ -1,7 +1,7 @@
 {
   "name": "homebridge-paperclip",
   "displayName": "Paperclip",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "HomeKit control for Samsung air conditioners (WindFree and other SmartThings-connected models) with a built-in, no-terminal SmartThings setup wizard.",
   "license": "Apache-2.0",
   "author": "Cyrus Kakkar (https://github.com/ckakkar)",

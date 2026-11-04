@@ -84,47 +84,49 @@ export interface SwitchSpec {
   subtype: string;
   /** Short name, as a native accessory would use inside its own tile. */
   label: string;
-  /**
-   * "ac": shown with the AC, under the dial, like the Samsung app's own page (Dry, Turbo, Quiet, Sleep).
-   * "settings": unit settings you rarely touch (Display, Beep, Auto Clean, swing axes), on a separate accessory.
-   */
-  placement: 'ac' | 'settings';
 }
 
-/** The switches this unit gets with this config, and where each one lives. */
+/** Samsung app order: the cooling boosts first, then comfort modes. */
+const OPTIONAL_MODE_ORDER = ['speed', 'quiet', 'sleep', 'windFree', 'windFreeSleep', 'smart', 'comfort', 'longWind'];
+
+/**
+ * The toggles this unit gets with this config, in the order the Samsung app lists them. They all sit
+ * inside the AC's own tile, under the dial and the Fan, so the room shows one accessory per AC.
+ */
 export function switchPlan(profile: AcProfile, config: PaperclipConfig): SwitchSpec[] {
   const caps = profile.capabilities;
   const plan: SwitchSpec[] = [];
+  const modes = config.optionalModeSwitches
+    .filter(mode => mode !== 'off' && profile.optionalModes.includes(mode))
+    .sort((a, b) => rank(a) - rank(b));
+  for (const mode of modes) {
+    plan.push({ subtype: SUBTYPE.optionalMode(mode), label: optionalModeLabel(mode) });
+  }
   if (config.dryModeSwitch && dryMode(profile)) {
-    plan.push({ subtype: SUBTYPE.dry, label: 'Dry', placement: 'ac' });
+    plan.push({ subtype: SUBTYPE.dry, label: 'Dry' });
   }
   if (config.fanModeSwitch && fanOnlyMode(profile)) {
-    plan.push({ subtype: SUBTYPE.fanOnly, label: 'Fan Only', placement: 'ac' });
-  }
-  for (const mode of config.optionalModeSwitches) {
-    if (mode !== 'off' && profile.optionalModes.includes(mode)) {
-      plan.push({ subtype: SUBTYPE.optionalMode(mode), label: optionalModeLabel(mode), placement: 'ac' });
-    }
+    plan.push({ subtype: SUBTYPE.fanOnly, label: 'Fan Only' });
   }
   if (config.swingDirectionSwitches && profile.swing.vertical && profile.swing.horizontal) {
-    plan.push({ subtype: SUBTYPE.swingVertical, label: 'Swing Up/Down', placement: 'settings' });
-    plan.push({ subtype: SUBTYPE.swingHorizontal, label: 'Swing Left/Right', placement: 'settings' });
+    plan.push({ subtype: SUBTYPE.swingVertical, label: 'Swing Up/Down' });
+    plan.push({ subtype: SUBTYPE.swingHorizontal, label: 'Swing Left/Right' });
   }
   if (config.displaySwitch && (caps.has(CAP.lighting) || caps.has(CAP.execute))) {
-    plan.push({ subtype: SUBTYPE.display, label: 'Display', placement: 'settings' });
+    plan.push({ subtype: SUBTYPE.display, label: 'Display' });
   }
   if (config.beepSwitch && caps.has(CAP.beep)) {
-    plan.push({ subtype: SUBTYPE.beep, label: 'Beep', placement: 'settings' });
+    plan.push({ subtype: SUBTYPE.beep, label: 'Beep' });
   }
   if (config.autoCleanSwitch && caps.has(CAP.autoClean)) {
-    plan.push({ subtype: SUBTYPE.autoClean, label: 'Auto Clean', placement: 'settings' });
+    plan.push({ subtype: SUBTYPE.autoClean, label: 'Auto Clean' });
   }
   return plan;
 }
 
-/** Whether this unit needs the companion Settings accessory. */
-export function needsSettingsAccessory(profile: AcProfile, config: PaperclipConfig): boolean {
-  return switchPlan(profile, config).some(s => s.placement === 'settings');
+function rank(mode: string): number {
+  const index = OPTIONAL_MODE_ORDER.indexOf(mode);
+  return index === -1 ? OPTIONAL_MODE_ORDER.length : index;
 }
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
@@ -166,8 +168,6 @@ export class PaperclipAirConditioner {
     readonly device: Device,
     readonly profile: AcProfile,
     initialStatus: DeviceStatus,
-    /** Companion accessory for rarely used settings switches. Without it, they go on the main accessory. */
-    readonly modesAccessory?: PlatformAccessory<AccessoryContext>,
   ) {
     this.hap = deps.api.hap;
     this.C = this.hap.Characteristic;
@@ -182,17 +182,9 @@ export class PaperclipAirConditioner {
     accessory.context.deviceId = device.deviceId;
     accessory.context.label = this.name;
     accessory.context.kind = 'main';
-    if (modesAccessory) {
-      modesAccessory.context.deviceId = device.deviceId;
-      modesAccessory.context.label = `${this.name} Settings`;
-      modesAccessory.context.kind = 'modes';
-    }
     this.rememberManualFan();
 
     this.setupInformation(accessory, this.device.deviceId);
-    if (modesAccessory) {
-      this.setupInformation(modesAccessory, `${this.device.deviceId}-modes`);
-    }
     this.heaterCooler = this.setupHeaterCooler();
     this.setupCompanions();
     this.setupSwitches();
@@ -362,35 +354,27 @@ export class PaperclipAirConditioner {
   private setupSwitches(): void {
     const plan = switchPlan(this.profile, this.deps.config);
     const handlers = this.switchHandlers();
-    const placed = new Map<PlatformAccessory, Set<string>>([[this.accessory, new Set()]]);
-    if (this.modesAccessory) {
-      placed.set(this.modesAccessory, new Set());
-    }
+    const keep = new Set<string>();
 
     for (const spec of plan) {
       const handler = handlers[spec.subtype] ?? this.optionalModeHandler(spec.subtype);
       if (!handler) {
         continue;
       }
-      const target = spec.placement === 'settings' && this.modesAccessory ? this.modesAccessory : this.accessory;
-      placed.get(target)!.add(spec.subtype);
-      const service = target.getServiceById(this.S.Switch, spec.subtype)
-        ?? target.addService(this.S.Switch, spec.label, spec.subtype);
+      keep.add(spec.subtype);
+      const service = this.accessory.getServiceById(this.S.Switch, spec.subtype)
+        ?? this.accessory.addService(this.S.Switch, spec.label, spec.subtype);
       this.nameService(service, spec.label, [`${this.name} ${spec.label}`, `${this.name} ${legacyLabel(spec)}`]);
       service.getCharacteristic(this.C.On)
         .onGet(() => this.read(handler.read() ?? false))
         .onSet(value => handler.write(Boolean(value)));
-      if (target === this.accessory) {
-        this.heaterCooler.addLinkedService(service);
-      }
+      this.heaterCooler.addLinkedService(service);
       this.extras.push({ service, read: handler.read });
     }
 
-    for (const [target, keep] of placed) {
-      for (const service of [...target.services]) {
-        if (service.UUID === this.S.Switch.UUID && !keep.has(service.subtype ?? '')) {
-          this.removeService(target, service);
-        }
+    for (const service of [...this.accessory.services]) {
+      if (service.UUID === this.S.Switch.UUID && !keep.has(service.subtype ?? '')) {
+        this.removeService(this.accessory, service);
       }
     }
   }

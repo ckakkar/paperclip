@@ -16,7 +16,7 @@ class FakePlatformAccessory extends hap.Accessory {
   context: Record<string, unknown> = {};
 }
 
-function setup(options: { config?: Record<string, unknown>; status?: DeviceStatus; device?: Device; withModes?: boolean } = {}) {
+function setup(options: { config?: Record<string, unknown>; status?: DeviceStatus; device?: Device } = {}) {
   const status = options.status ?? windFreeStatus();
   const device = options.device ?? windFreeDevice();
   const profile = buildProfile(device, status);
@@ -31,24 +31,19 @@ function setup(options: { config?: Record<string, unknown>; status?: DeviceStatu
   const log = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const api = { hap, updatePlatformAccessories: vi.fn() } as unknown as API;
   const accessory = new FakePlatformAccessory('Bedroom AC', hap.uuid.generate('test')) as unknown as PlatformAccessory<AccessoryContext>;
-  const modes = options.withModes === false
-    ? undefined
-    : new FakePlatformAccessory('Bedroom AC Modes', hap.uuid.generate('test-modes')) as unknown as PlatformAccessory<AccessoryContext>;
   const ac = new PaperclipAirConditioner(
     { api, log, client: client as unknown as SmartThingsClient, config },
     accessory,
     device,
     profile,
     status,
-    modes,
   );
   const heaterCooler = accessory.getService(S.HeaterCooler)!;
   const fan = accessory.getServiceById(S.Fanv2, 'fan-speed');
   const char = (type: hap.WithUUID<new () => hap.Characteristic>) => heaterCooler.getCharacteristic(type);
-  const toggle = (subtype: string) =>
-    (modes?.getServiceById(S.Switch, subtype) ?? accessory.getServiceById(S.Switch, subtype))!.getCharacteristic(C.On);
+  const toggle = (subtype: string) => accessory.getServiceById(S.Switch, subtype)!.getCharacteristic(C.On);
   const subtypes = (a: PlatformAccessory | undefined) => (a?.services ?? []).map(s => s.subtype).filter(Boolean).sort();
-  return { ac, accessory, modes, client, sent, log, heaterCooler, fan, char, toggle, subtypes, profile, config };
+  return { ac, accessory, client, sent, log, heaterCooler, fan, char, toggle, subtypes, profile, config };
 }
 
 /** Writes like the Home app does, then lets the 250 ms command batch go out. Rejects with the HAP status on refusal. */
@@ -73,8 +68,8 @@ afterEach(() => {
 });
 
 describe('PaperclipAirConditioner', () => {
-  it('lays the AC out like the Samsung app: dial, Fan and mode toggles together, settings elsewhere', () => {
-    const { accessory, modes, char, heaterCooler, fan, subtypes } = setup();
+  it('lays the AC out like the Samsung app: one tile with the dial, the Fan and the mode toggles', () => {
+    const { accessory, char, heaterCooler, fan, subtypes } = setup();
 
     expect(heaterCooler.getCharacteristic(C.ConfiguredName).value).toBe('Bedroom AC');
     expect(char(C.TargetHeaterCoolerState).props.validValues).toEqual([0, 2]);
@@ -86,7 +81,6 @@ describe('PaperclipAirConditioner', () => {
     expect(heaterCooler.testCharacteristic(C.SwingMode)).toBe(false);
 
     expect(subtypes(accessory)).toEqual(['dry', 'fan-speed', 'humidity', 'mode-quiet', 'mode-sleep', 'mode-speed', 'mode-windFree', 'mode-windFreeSleep']);
-    expect(subtypes(modes)).toEqual([]);
     const turbo = accessory.getServiceById(S.Switch, 'mode-speed')!;
     expect(heaterCooler.linkedServices).toContain(turbo);
 
@@ -112,14 +106,9 @@ describe('PaperclipAirConditioner', () => {
     // A restart re-runs setup on the cached accessory.
     const again = new PaperclipAirConditioner(
       { api: { hap, updatePlatformAccessories: vi.fn() } as unknown as API, log: first.log, client: first.client as unknown as SmartThingsClient, config: first.config },
-      first.accessory, windFreeDevice(), first.profile, windFreeStatus(), first.modes,
+      first.accessory, windFreeDevice(), first.profile, windFreeStatus(),
     );
     expect(again.accessory.getServiceById(S.Fanv2, 'fan-speed')!.getCharacteristic(C.ConfiguredName).value).toBe('Bedroom Breeze');
-  });
-
-  it('puts the switches on the AC itself when there is no Modes accessory', () => {
-    const { accessory, subtypes } = setup({ withModes: false });
-    expect(subtypes(accessory)).toContain('mode-sleep');
   });
 
   it('batches power and mode into a single SmartThings request, power first', async () => {
@@ -231,15 +220,15 @@ describe('PaperclipAirConditioner', () => {
   });
 
   it('adds optional switches only when asked and supported', () => {
-    const { accessory, modes, subtypes } = setup({ config: { displaySwitch: true, autoCleanSwitch: true, fanModeSwitch: true, optionalModeSwitches: ['quiet', 'notAMode'] } });
-    expect(subtypes(accessory)).toEqual(['dry', 'fan', 'fan-speed', 'humidity', 'mode-quiet']);
-    expect(subtypes(modes)).toEqual(['autoclean', 'display']);
+    const { accessory, subtypes } = setup({ config: { displaySwitch: true, autoCleanSwitch: true, fanModeSwitch: true, optionalModeSwitches: ['quiet', 'notAMode'] } });
+    expect(subtypes(accessory)).toEqual(['autoclean', 'display', 'dry', 'fan', 'fan-speed', 'humidity', 'mode-quiet']);
   });
 
-  it('reports which switches a config produces, so the platform knows whether to add the Modes accessory', () => {
+  it('lists the toggles in the Samsung app\'s order, whatever order the config uses', () => {
     const profile = buildProfile(windFreeDevice(), windFreeStatus());
     expect(switchPlan(profile, parseConfig({ optionalModeSwitches: [], dryModeSwitch: false }))).toEqual([]);
-    expect(switchPlan(profile, parseConfig({})).map(s => s.label)).toContain('Turbo');
+    expect(switchPlan(profile, parseConfig({ optionalModeSwitches: ['sleep', 'windFree', 'quiet', 'speed'], displaySwitch: true })).map(s => s.label))
+      .toEqual(['Turbo', 'Quiet', 'Sleep', 'WindFree', 'Dry', 'Display']);
   });
 
   it('keeps the old single-slider behaviour when the Fan control is turned off', () => {
@@ -289,10 +278,9 @@ describe('a 2025 unit with air-flow swing (DA-AC-RAC-01011)', () => {
   const rac = (config: Record<string, unknown> = {}) =>
     setup({ device: rac01011Device(), status: rac01011Status(), config: { beepSwitch: true, swingDirectionSwitches: true, ...config } });
 
-  it('shows the AC with Fan, Filter and Dry/Sleep/Quiet/Turbo, and settings on the Settings accessory', () => {
-    const { accessory, modes, fan, heaterCooler, subtypes } = rac();
-    expect(subtypes(accessory)).toEqual(['dry', 'fan-speed', 'filter', 'mode-quiet', 'mode-sleep', 'mode-speed']);
-    expect(subtypes(modes)).toEqual(['beep', 'swing-horizontal', 'swing-vertical']);
+  it('shows one AC with the Fan, Filter, mode toggles and the settings it was asked for', () => {
+    const { accessory, fan, heaterCooler, subtypes } = rac();
+    expect(subtypes(accessory)).toEqual(['beep', 'dry', 'fan-speed', 'filter', 'mode-quiet', 'mode-sleep', 'mode-speed', 'swing-horizontal', 'swing-vertical']);
     expect(accessory.getServiceById(S.Switch, 'mode-speed')!.getCharacteristic(C.Name).value).toBe('Turbo');
     // Four speeds, four steps: Low 25, Medium 50, High 75, Turbo 100.
     expect(fan!.getCharacteristic(C.RotationSpeed).props).toMatchObject({ minValue: 0, maxValue: 100, minStep: 25 });

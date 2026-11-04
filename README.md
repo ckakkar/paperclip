@@ -19,11 +19,11 @@ iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi�
 ## What you get
 
 The AC's page in the Home app follows the Samsung SmartThings app: a temperature dial with **Off / Cool / Auto**, then a **Fan**
-control and the mode toggles right under it. Unit settings you rarely touch (Display, Beep, Auto Clean) live on a separate
-**Settings** accessory.
+control and the mode toggles right under it (Turbo, Quiet, Sleep, Dry). It's one tile in the room, like a native AC.
 
-> Apple fixes the mode menu to Off, Cool, Auto and Heat. Samsung's **Dry** therefore appears as a toggle under the dial, and
-> **Fan** mode is what you get when you turn the Fan on while the AC is off.
+> Apple fixes the mode menu to Off, Cool, Auto and Heat, for HomeKit and Matter accessories alike. Samsung's **Dry** therefore
+> appears as a toggle under the dial (the menu shows Cool while it runs), and **Fan** mode is what you get when you turn the Fan
+> on while the AC is off.
 
 | In the Home app | Samsung feature |
 |---|---|
@@ -36,7 +36,7 @@ control and the mode toggles right under it. Unit settings you rarely touch (Dis
 | Humidity (inside the AC) | Indoor humidity, if the unit measures it |
 | **Turbo**, **Quiet**, **Sleep**, WindFree… | Samsung's optional modes, whichever your unit supports. Only one runs at a time, only while the AC is on, and Turbo only in Cool |
 | **Dry** | Dehumidify. Turning it off returns the AC to its previous mode |
-| **Settings** accessory: Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default |
+| Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default, also inside the AC |
 
 Paperclip only adds a control when your AC actually reports it, so you don't get tiles that always say "No Response".
 
