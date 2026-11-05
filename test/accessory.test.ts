@@ -68,7 +68,7 @@ afterEach(() => {
 });
 
 describe('PaperclipAirConditioner', () => {
-  it('lays the AC out like the Samsung app: one tile with the dial, the Fan and the mode toggles', () => {
+  it('lays the AC out like the Samsung app: one tile with the dial, Fan Speed and the mode toggles', () => {
     const { accessory, char, heaterCooler, fan, subtypes } = setup();
 
     expect(heaterCooler.getCharacteristic(C.ConfiguredName).value).toBe('Bedroom AC');
@@ -76,15 +76,15 @@ describe('PaperclipAirConditioner', () => {
     expect(char(C.CoolingThresholdTemperature).props).toMatchObject({ minValue: 16, maxValue: 30, minStep: 1 });
     // The Home app only lists Auto when both thresholds exist; both mirror Samsung's single setpoint.
     expect(char(C.HeatingThresholdTemperature).value).toBe(24);
-    // Airflow lives only on the Fan, so there's one place to change it.
+    // Airflow lives only on Fan Speed, so there's one place to change it.
     expect(heaterCooler.testCharacteristic(C.RotationSpeed)).toBe(false);
     expect(heaterCooler.testCharacteristic(C.SwingMode)).toBe(false);
 
-    expect(subtypes(accessory)).toEqual(['dry', 'fan-speed', 'humidity', 'mode-quiet', 'mode-sleep', 'mode-speed', 'mode-windFree', 'mode-windFreeSleep']);
+    expect(subtypes(accessory)).toEqual(['dry', 'fan', 'fan-speed', 'humidity', 'mode-quiet', 'mode-sleep', 'mode-speed', 'mode-windFree', 'mode-windFreeSleep']);
     const turbo = accessory.getServiceById(S.Switch, 'mode-speed')!;
     expect(heaterCooler.linkedServices).toContain(turbo);
 
-    expect(fan!.getCharacteristic(C.ConfiguredName).value).toBe('Fan');
+    expect(fan!.getCharacteristic(C.ConfiguredName).value).toBe('Fan Speed');
     expect(fan!.getCharacteristic(C.RotationSpeed).props.minStep).toBe(25);
     expect(fan!.testCharacteristic(C.SwingMode)).toBe(true);
     expect(heaterCooler.linkedServices).toContain(fan);
@@ -97,7 +97,7 @@ describe('PaperclipAirConditioner', () => {
   it('names mode switches the short, native way', () => {
     const { accessory } = setup();
     const names = accessory.services.filter(s => s.UUID === S.Switch.UUID).map(s => s.getCharacteristic(C.ConfiguredName).value).sort();
-    expect(names).toEqual(['Dry', 'Quiet', 'Sleep', 'Turbo', 'WindFree', 'WindFree Sleep']);
+    expect(names).toEqual(['Dry', 'Fan Only', 'Quiet', 'Sleep', 'Turbo', 'WindFree', 'WindFree Sleep']);
   });
 
   it('keeps a name the user set in the Home app', () => {
@@ -157,37 +157,74 @@ describe('PaperclipAirConditioner', () => {
     expect(sent).toHaveLength(1);
   });
 
-  it('runs fan-only when the Fan is turned on with the AC off, and cools again from the AC tile', async () => {
-    const { ac, fan, char, sent, accessory } = setup({
+  it('treats Fan Speed\'s on/off as the AC\'s power, like the remote, without changing the mode', async () => {
+    const { ac, fan, char, sent } = setup({
       status: windFreeStatus({ airConditionerMode: { supportedAcModes: { value: ['cool', 'dry', 'wind', 'auto'] }, airConditionerMode: { value: 'auto' } } }),
     });
-    await write(fan!.getCharacteristic(C.Active), 1);
+    // Dragging the slider up from off: the Home app sends Active and the speed together.
+    const on = fan!.getCharacteristic(C.Active).handleSetRequest(1);
+    const speed = fan!.getCharacteristic(C.RotationSpeed).handleSetRequest(50);
+    await vi.advanceTimersByTimeAsync(300);
+    await Promise.all([on, speed]);
     expect(sent[0]).toEqual([
       { capability: 'switch', command: 'on' },
-      { capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['wind'] },
+      { capability: 'airConditionerFanMode', command: 'setFanMode', arguments: ['medium'] },
     ]);
-    expect(ac.currentState.mode).toBe('wind');
+    expect(ac.currentState.mode).toBe('auto');
+    expect(char(C.Active).value).toBe(1);
+
+    await write(fan!.getCharacteristic(C.Active), 0);
+    expect(sent[1]).toEqual([{ capability: 'switch', command: 'off' }]);
     expect(char(C.Active).value).toBe(0);
-    expect(char(C.CurrentHeaterCoolerState).value).toBe(C.CurrentHeaterCoolerState.INACTIVE);
-    expect(fan!.getCharacteristic(C.Active).value).toBe(1);
+  });
+
+  it('shows Fan Only as a running AC and switches it with its own toggle', async () => {
+    const { ac, accessory, char, fan, sent, toggle } = setup({
+      status: windFreeStatus({ switch: { switch: { value: 'on' } }, airConditionerMode: { supportedAcModes: { value: ['cool', 'dry', 'wind', 'auto'] }, airConditionerMode: { value: 'auto' } } }),
+    });
+    await write(toggle('fan'), true);
+    expect(sent[0]).toEqual([{ capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['wind'] }]);
     expect(accessory.context.modeBeforeSpecial).toBe('auto');
+    expect(ac.currentState.mode).toBe('wind');
+    // One power: the AC reads on (Idle, not cooling), the menu shows Cool, Fan Speed stays on.
+    expect(char(C.Active).value).toBe(1);
+    expect(char(C.CurrentHeaterCoolerState).value).toBe(C.CurrentHeaterCoolerState.IDLE);
+    expect(char(C.TargetHeaterCoolerState).value).toBe(C.TargetHeaterCoolerState.COOL);
+    expect(fan!.getCharacteristic(C.Active).value).toBe(1);
+    expect(toggle('dry').value).toBe(false);
+
+    await write(toggle('fan'), false);
+    expect(sent[1]).toEqual([{ capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['auto'] }]);
+  });
+
+  it('turns the unit off from the AC in Fan Only too, and cools again when it is turned back on', async () => {
+    const { ac, char, sent, accessory } = setup({
+      status: windFreeStatus({ switch: { switch: { value: 'on' } }, airConditionerMode: { supportedAcModes: { value: ['cool', 'wind'] }, airConditionerMode: { value: 'wind' } } }),
+    });
+    accessory.context.modeBeforeSpecial = 'cool';
+    await write(char(C.Active), 0);
+    expect(sent[0]).toEqual([{ capability: 'switch', command: 'off' }]);
 
     await write(char(C.Active), 1);
     expect(sent[1]).toEqual([
       { capability: 'switch', command: 'on' },
-      { capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['auto'] },
+      { capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['cool'] },
     ]);
-
-    await write(fan!.getCharacteristic(C.Active), 0);
-    expect(sent[2]).toEqual([{ capability: 'switch', command: 'off' }]);
+    expect(ac.currentState.mode).toBe('cool');
   });
 
-  it('ignores "AC off" while only the fan runs', async () => {
-    const { char, sent } = setup({
-      status: windFreeStatus({ switch: { switch: { value: 'on' } }, airConditionerMode: { supportedAcModes: { value: ['cool', 'wind'] }, airConditionerMode: { value: 'wind' } } }),
-    });
-    await write(char(C.Active), 0);
-    expect(sent).toHaveLength(0);
+  it('lists the services in reading order: dial, Fan Speed, toggles, filter', () => {
+    const { accessory, client, config, log, profile } = setup({ device: rac01011Device(), status: rac01011Status(), config: { displaySwitch: true } });
+    // A cache from an older version keeps the order its services were first added in.
+    accessory.services.reverse();
+    new PaperclipAirConditioner(
+      { api: { hap, updatePlatformAccessories: vi.fn() } as unknown as API, log, client: client as unknown as SmartThingsClient, config },
+      accessory, rac01011Device(), profile, rac01011Status(),
+    );
+    const order = accessory.services.slice(1).map(s => s.getCharacteristic(C.ConfiguredName).value);
+    expect(accessory.services[0].UUID).toBe(S.AccessoryInformation.UUID);
+    expect(order.slice(1)).toEqual(['Fan Speed', 'Turbo', 'Quiet', 'Sleep', 'Dry', 'Fan Only', 'Display', 'Filter']);
+    expect(accessory.services[1]).toBe(accessory.getService(S.HeaterCooler));
   });
 
   it('uses the Dry switch to enter dry mode and return to the previous mode', async () => {
@@ -226,12 +263,12 @@ describe('PaperclipAirConditioner', () => {
 
   it('lists the toggles in the Samsung app\'s order, whatever order the config uses', () => {
     const profile = buildProfile(windFreeDevice(), windFreeStatus());
-    expect(switchPlan(profile, parseConfig({ optionalModeSwitches: [], dryModeSwitch: false }))).toEqual([]);
+    expect(switchPlan(profile, parseConfig({ optionalModeSwitches: [], dryModeSwitch: false, fanModeSwitch: false }))).toEqual([]);
     expect(switchPlan(profile, parseConfig({ optionalModeSwitches: ['sleep', 'windFree', 'quiet', 'speed'], displaySwitch: true })).map(s => s.label))
-      .toEqual(['Turbo', 'Quiet', 'Sleep', 'WindFree', 'Dry', 'Display']);
+      .toEqual(['Turbo', 'Quiet', 'Sleep', 'WindFree', 'Dry', 'Fan Only', 'Display']);
   });
 
-  it('keeps the old single-slider behaviour when the Fan control is turned off', () => {
+  it('keeps the old single-slider behaviour when Fan Speed is turned off', () => {
     const { accessory, char, heaterCooler } = setup({ config: { fanTile: false } });
     expect(char(C.RotationSpeed).props.minStep).toBe(20);
     expect(heaterCooler.testCharacteristic(C.SwingMode)).toBe(true);
@@ -278,9 +315,9 @@ describe('a 2025 unit with air-flow swing (DA-AC-RAC-01011)', () => {
   const rac = (config: Record<string, unknown> = {}) =>
     setup({ device: rac01011Device(), status: rac01011Status(), config: { beepSwitch: true, swingDirectionSwitches: true, ...config } });
 
-  it('shows one AC with the Fan, Filter, mode toggles and the settings it was asked for', () => {
+  it('shows one AC with Fan Speed, Filter, mode toggles and the settings it was asked for', () => {
     const { accessory, fan, heaterCooler, subtypes } = rac();
-    expect(subtypes(accessory)).toEqual(['beep', 'dry', 'fan-speed', 'filter', 'mode-quiet', 'mode-sleep', 'mode-speed', 'swing-horizontal', 'swing-vertical']);
+    expect(subtypes(accessory)).toEqual(['beep', 'dry', 'fan', 'fan-speed', 'filter', 'mode-quiet', 'mode-sleep', 'mode-speed', 'swing-horizontal', 'swing-vertical']);
     expect(accessory.getServiceById(S.Switch, 'mode-speed')!.getCharacteristic(C.Name).value).toBe('Turbo');
     // Four speeds, four steps: Low 25, Medium 50, High 75, Turbo 100.
     expect(fan!.getCharacteristic(C.RotationSpeed).props).toMatchObject({ minValue: 0, maxValue: 100, minStep: 25 });
@@ -321,11 +358,14 @@ describe('a 2025 unit with air-flow swing (DA-AC-RAC-01011)', () => {
     expect(fan!.getCharacteristic(C.SwingMode).value).toBe(C.SwingMode.SWING_ENABLED);
   });
 
-  it('runs fan-only with the unit\'s "fan" mode', async () => {
-    const { fan, sent, ac } = rac();
+  it('runs fan-only with the unit\'s "fan" mode, and turns it on from off', async () => {
+    const { sent, ac, toggle } = rac();
     ac.applyStatus(rac01011Status({ switch: { switch: { value: 'off' } } }));
-    await write(fan!.getCharacteristic(C.Active), 1);
-    expect(sent[0][1]).toEqual({ capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['fan'] });
+    await write(toggle('fan'), true);
+    expect(sent[0]).toEqual([
+      { capability: 'switch', command: 'on' },
+      { capability: 'airConditionerMode', command: 'setAirConditionerMode', arguments: ['fan'] },
+    ]);
   });
 
   it('turns on Turbo while cooling, and resets the filter', async () => {

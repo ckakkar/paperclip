@@ -12,7 +12,7 @@ export interface PaperclipConfig {
   /** Device IDs or names to leave out of HomeKit (case-insensitive). */
   excludeDevices: string[];
   humiditySensor: boolean;
-  /** A separate Fan tile with a speed slider and an Auto toggle. */
+  /** A Fan Speed control inside the AC: speed steps, an Auto toggle and Oscillate. */
   fanTile: boolean;
   dryModeSwitch: boolean;
   fanModeSwitch: boolean;
@@ -43,7 +43,7 @@ export const DEFAULTS: Omit<PaperclipConfig, 'credentials'> = {
   humiditySensor: true,
   fanTile: true,
   dryModeSwitch: true,
-  fanModeSwitch: false,
+  fanModeSwitch: true,
   optionalModeSwitches: ALL_OPTIONAL_MODES,
   displaySwitch: false,
   autoCleanSwitch: false,
