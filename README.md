@@ -166,6 +166,8 @@ Add `-U <path>` if your Homebridge storage folder isn't `~/.homebridge`.
 | Step 1 says the token is missing permissions | Make a new token with *every* scope ticked, or use the CLI route above. |
 | The tile says "No Response" | SmartThings or your internet was unreachable for three refreshes in a row. It recovers by itself. Check that the AC is online in the SmartThings app. |
 | Changes take a few seconds to show | Paperclip shows your change immediately, then confirms it with SmartThings about 3 s later. Changes made on the remote show up within `pollInterval`. |
+| The AC stops responding after the Homebridge machine switches networks | Set Homebridge's mDNS advertiser to **Ciao** (Homebridge UI → Settings → mDNS Advertiser, or `"advertiser": "ciao"` in the `bridge` block). It re-announces the bridge when the network changes; `bonjour-hap` doesn't and logs `EADDRNOTAVAIL`. HomeKit only reaches the bridge while it shares a network with your home hub. |
+| Safari won't quit while the Homebridge UI is open | The UI's Terminal asks before closing a session you typed in. Add `"terminal": { "hideWarning": true }` to the UI's `config` block to turn that prompt off. |
 | WindFree, Sleep or Turbo turns itself off | Samsung only allows these in some modes (usually Cool), so changing the mode cancels them. Only one can be on at a time. |
 | "Turbo" appears twice | **Turbo switch** = Samsung's fast-cooling mode. **Turbo fan speed** = the top of the Fan tile's slider. They're separate settings on the AC too. |
 

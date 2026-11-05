@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.4.1 (2026-11-05)
+
+- Retry finding the AC every 2 minutes at most (was 10) after a network outage, so it comes back soon after the Homebridge machine rejoins a network.
+- README: how to keep Homebridge working when the machine moves between networks (use the Ciao mDNS advertiser).
+
 ## 0.4.0 (2026-11-04)
 
 - **One tile per AC.** The separate Settings/Modes accessory is gone. Its switches (Display, Beep, Auto Clean, swing axes) now sit inside the AC's tile with the mode toggles, and the old accessory is removed from HomeKit.
