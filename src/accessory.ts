@@ -91,7 +91,7 @@ const OPTIONAL_MODE_ORDER = ['speed', 'quiet', 'sleep', 'windFree', 'windFreeSle
 
 /**
  * The toggles this unit gets with this config, in the order the Samsung app lists them. They all sit
- * inside the AC's own tile, under the dial and the Fan, so the room shows one accessory per AC.
+ * inside the AC's own tile, under the dial and Fan Speed, so the room shows one accessory per AC.
  */
 export function switchPlan(profile: AcProfile, config: PaperclipConfig): SwitchSpec[] {
   const caps = profile.capabilities;
@@ -138,11 +138,11 @@ export class PaperclipAirConditioner {
   private readonly heaterCooler: Service;
   private readonly name: string;
 
-  /** With a Fan control, fan speed, Auto and swing live there, and fan-only mode is "Fan on, AC off". */
+  /** With a Fan Speed control, fan speed, Auto and swing live there instead of on the AC's own service. */
   private readonly fanTile: boolean;
-  /** Fan speeds on the AC's own slider (only used when there is no Fan control). */
+  /** Fan speeds on the AC's own slider (only used when there is no Fan Speed control). */
   private readonly coolerLevels: string[];
-  /** Fan speeds on the Fan control's slider (never Auto; that is its own toggle). */
+  /** Fan speeds on the Fan Speed control's slider (never Auto; that is its own toggle). */
   private readonly tileLevels: string[];
 
   private state: AcState;
@@ -187,7 +187,8 @@ export class PaperclipAirConditioner {
     this.setupInformation(accessory, this.device.deviceId);
     this.heaterCooler = this.setupHeaterCooler();
     this.setupCompanions();
-    this.setupSwitches();
+    const plan = this.setupSwitches();
+    this.orderServices(plan);
     this.pushState();
   }
 
@@ -288,7 +289,11 @@ export class PaperclipAirConditioner {
     return service;
   }
 
-  /** Fan, filter and humidity: shown inside the AC's own tile, like a native air conditioner. */
+  /**
+   * Fan Speed, filter and humidity: shown inside the AC's own tile, like a native air conditioner.
+   * Fan Speed is the AC's own fan, as on the remote: its on/off is the unit's power, and it never
+   * changes the mode. Fan-only mode has its own toggle next to Dry.
+   */
   private setupCompanions(): void {
     const C = this.C;
     const keep = new Set<string>();
@@ -296,8 +301,9 @@ export class PaperclipAirConditioner {
     if (this.fanTile) {
       keep.add(SUBTYPE.fanTile);
       const fan = this.accessory.getServiceById(this.S.Fanv2, SUBTYPE.fanTile)
-        ?? this.accessory.addService(this.S.Fanv2, 'Fan', SUBTYPE.fanTile);
-      this.nameService(fan, 'Fan', [`${this.name} Fan`]);
+        ?? this.accessory.addService(this.S.Fanv2, FAN_SPEED_NAME, SUBTYPE.fanTile);
+      // "Fan" was the 0.2–0.4 name; renaming it says this is the AC's speed, not a separate fan.
+      this.nameService(fan, FAN_SPEED_NAME, ['Fan', `${this.name} Fan`, `${this.name} ${FAN_SPEED_NAME}`]);
       fan.getCharacteristic(C.Active)
         .onGet(() => this.read(this.state.power ? C.Active.ACTIVE : C.Active.INACTIVE))
         .onSet(value => this.setFanActive(Number(value) === C.Active.ACTIVE));
@@ -351,7 +357,7 @@ export class PaperclipAirConditioner {
     }
   }
 
-  private setupSwitches(): void {
+  private setupSwitches(): SwitchSpec[] {
     const plan = switchPlan(this.profile, this.deps.config);
     const handlers = this.switchHandlers();
     const keep = new Set<string>();
@@ -377,6 +383,39 @@ export class PaperclipAirConditioner {
         this.removeService(this.accessory, service);
       }
     }
+    return plan;
+  }
+
+  /**
+   * Lists the services in the order they read on the AC's page: the dial, Fan Speed, the toggles in
+   * Samsung-app order, then the filter and humidity. Cached accessories otherwise keep the order the
+   * services were first added in, which differs between upgrades. The sort is in place and keeps
+   * every service's instance ID, so HomeKit sees the same controls.
+   */
+  private orderServices(plan: SwitchSpec[]): void {
+    const rank = (service: Service): number => {
+      if (service.UUID === this.S.AccessoryInformation.UUID) {
+        return 0;
+      }
+      if (service === this.heaterCooler) {
+        return 1;
+      }
+      if (service === this.fanService) {
+        return 2;
+      }
+      if (service.UUID === this.S.Switch.UUID) {
+        const index = plan.findIndex(spec => spec.subtype === service.subtype);
+        return 10 + (index === -1 ? plan.length : index);
+      }
+      if (service === this.filterService) {
+        return 1000;
+      }
+      if (service === this.humidityService) {
+        return 1001;
+      }
+      return 2000;
+    };
+    this.accessory.services.sort((a, b) => rank(a) - rank(b));
   }
 
   private switchHandlers(): Record<string, { read: () => boolean | undefined; write: (on: boolean) => Promise<void> }> {
@@ -489,9 +528,9 @@ export class PaperclipAirConditioner {
     return this.state.mode !== undefined && FAN_ONLY_MODES.includes(this.state.mode);
   }
 
-  /** The AC tile is on while the unit cools (or dries); fan-only shows as "AC off, Fan on". */
+  /** One power, as on the remote: the AC reads on in every mode, Fan Only included (it shows Idle). */
   private coolerActive(): boolean {
-    return this.state.power === true && !(this.fanTile && this.isFanOnly());
+    return this.state.power === true;
   }
 
   private coolerCurrentState(): number {
@@ -544,15 +583,16 @@ export class PaperclipAirConditioner {
   // Writes
   // ---------------------------------------------------------------------------
 
+  /**
+   * The AC's power. Off always turns the unit off, whatever mode it's in. Turning the AC on after it
+   * was left in Fan Only cools again (in the mode before Fan Only), because that's what the AC tile is for.
+   */
   private async setCoolerActive(on: boolean): Promise<void> {
     if (!on) {
-      if (this.fanTile && this.isFanOnly() && this.state.power) {
-        return; // Already "off" from the AC's point of view; the Fan control owns fan-only.
-      }
       await this.queue([{ capability: CAP.switch, command: 'off' }], { power: false });
       return;
     }
-    if (this.fanTile && this.isFanOnly()) {
+    if (this.state.power !== true && this.isFanOnly()) {
       const mode = this.resumeMode();
       await this.queue([
         { capability: CAP.switch, command: 'on' },
@@ -563,7 +603,10 @@ export class PaperclipAirConditioner {
     await this.queue([{ capability: CAP.switch, command: 'on' }], { power: true });
   }
 
-  /** Fan on while the AC is off runs fan-only; Fan off turns the whole unit off. */
+  /**
+   * Fan Speed's on/off is the unit's power, like the remote's power button: on resumes the last mode,
+   * off turns the unit off. It never picks a mode; Fan Only has its own toggle.
+   */
   private async setFanActive(on: boolean): Promise<void> {
     if (!on) {
       await this.queue([{ capability: CAP.switch, command: 'off' }], { power: false });
@@ -572,19 +615,7 @@ export class PaperclipAirConditioner {
     if (this.state.power === true) {
       return;
     }
-    const fanOnly = fanOnlyMode(this.profile);
-    if (!fanOnly) {
-      await this.queue([{ capability: CAP.switch, command: 'on' }], { power: true });
-      return;
-    }
-    if (this.state.mode && !isSpecialMode(this.state.mode)) {
-      this.accessory.context.modeBeforeSpecial = this.state.mode;
-      this.persistContext();
-    }
-    await this.queue([
-      { capability: CAP.switch, command: 'on' },
-      { capability: CAP.mode, command: 'setAirConditionerMode', arguments: [fanOnly] },
-    ], this.modeChange(fanOnly));
+    await this.queue([{ capability: CAP.switch, command: 'on' }], { power: true });
   }
 
   private async setTargetState(value: CharacteristicValue): Promise<void> {
@@ -897,6 +928,8 @@ export class PaperclipAirConditioner {
     this.fanService?.updateCharacteristic(this.C.Active, error);
   }
 }
+
+const FAN_SPEED_NAME = 'Fan Speed';
 
 /** The long names 0.2.0 generated, so they can be replaced by the short ones. */
 function legacyLabel(spec: SwitchSpec): string {

@@ -65,12 +65,10 @@ export function modeToTargetState(mode: string | undefined, profile: AcProfile):
     state = TargetState.HEAT;
   } else if (mode && AUTO_MODES.includes(mode)) {
     state = TargetState.AUTO;
-  } else if (mode && DRY_MODES.includes(mode)) {
-    // Dry is Samsung's dehumidifying cool; showing Auto would claim a mode the unit isn't in.
-    state = valid.includes(TargetState.COOL) ? TargetState.COOL : valid[0];
   } else {
-    // Fan only (when there's no Fan control to show it): the closest HomeKit has is Auto.
-    state = valid.includes(TargetState.AUTO) ? TargetState.AUTO : TargetState.COOL;
+    // Dry and Fan Only have no HomeKit word. Both show as Cool (Samsung's Dry is a dehumidifying cool;
+    // showing Auto would claim a mode the unit isn't in), and their own toggle says which one runs.
+    state = valid.includes(TargetState.COOL) ? TargetState.COOL : valid[0];
   }
   return valid.includes(state) ? state : valid[valid.length - 1];
 }

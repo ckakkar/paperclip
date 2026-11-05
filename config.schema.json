@@ -23,10 +23,10 @@
         "description": "How often Paperclip reads the AC from SmartThings. Changes you make in HomeKit are sent immediately either way."
       },
       "fanTile": {
-        "title": "Fan control (speed, Auto, Oscillate)",
+        "title": "Fan Speed control (speed, Auto, Oscillate)",
         "type": "boolean",
         "default": true,
-        "description": "Shown inside the AC tile with Low, Medium, High and Turbo, an Auto toggle and Oscillate. Turning the Fan on while the AC is off runs fan-only mode."
+        "description": "Shown inside the AC tile with four steps (Low, Medium, High, Turbo), an Auto toggle and Oscillate. Its on/off is the AC's power, like the remote's power button; it never changes the mode."
       },
       "optionalModeSwitches": {
         "title": "Samsung modes to show as switches",
@@ -66,8 +66,8 @@
       "fanModeSwitch": {
         "title": "Fan Only switch",
         "type": "boolean",
-        "default": false,
-        "description": "Usually not needed: turning the Fan on while the AC is off already runs fan-only."
+        "default": true,
+        "description": "Samsung's Fan mode (air without cooling), as a toggle next to Dry. While it's on, the AC shows as on but not cooling. Turning it off returns to the previous mode."
       },
       "humiditySensor": {
         "title": "Humidity sensor",

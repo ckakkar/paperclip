@@ -102,9 +102,9 @@ describe('HomeKit mapping', () => {
     expect(targetStateToMode(TargetState.HEAT, heatPump)).toBe('heat');
   });
 
-  it('shows Dry as Cool, and fan-only as Auto (or Cool for units without Auto)', () => {
+  it('shows Dry and fan-only as Cool, since HomeKit has no word for either', () => {
     expect(modeToTargetState('dry', profile)).toBe(TargetState.COOL);
-    expect(modeToTargetState('wind', profile)).toBe(TargetState.AUTO);
+    expect(modeToTargetState('wind', profile)).toBe(TargetState.COOL);
     const coolOnly = { ...profile, modes: ['cool', 'dry', 'wind'] };
     expect(modeToTargetState('wind', coolOnly)).toBe(TargetState.COOL);
     expect(validTargetStates(coolOnly)).toEqual([TargetState.COOL]);
@@ -163,7 +163,7 @@ describe('HomeKit mapping', () => {
 
   it('recognises "fan" as fan-only mode', () => {
     const rac = buildProfile(rac01011Device(), rac01011Status());
-    expect(modeToTargetState('fan', rac)).toBe(TargetState.AUTO);
+    expect(modeToTargetState('fan', rac)).toBe(TargetState.COOL);
     expect(currentHeaterCoolerState({ power: true, mode: 'fan' }, rac)).toBe(CurrentState.IDLE);
   });
 

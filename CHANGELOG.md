@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented here. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.5.0 (2026-11-06)
+
+Works like the remote.
+
+- **One power.** The AC, Fan Speed and Siri all show and set the same power. Fan mode no longer makes the AC read "Off", and "turn off the AC" now works in Fan mode (it was ignored before).
+- **Fan Speed** (was "Fan") only changes the airflow: Low, Medium, High and Turbo, Auto and Oscillate. Turning it on while the AC is off powers the AC on in its last mode, like the remote's power button, instead of switching to fan-only.
+- **Fan Only toggle**, on by default, next to Dry. The Samsung modes are now Auto and Cool in the menu, with Dry and Fan Only as toggles; both show as Cool in the menu and return to the previous mode when turned off.
+- The AC's controls are listed in a fixed order: Fan Speed, Turbo, Quiet, Sleep, Dry, Fan Only, Display, then Filter. Upgraded installs used to keep whatever order the services were first added in.
+
+## 0.4.1 (2026-11-05)
+
+- Retry finding the AC every 2 minutes at most (was 10) after a network outage, so it comes back soon after the Homebridge machine rejoins a network.
+- README: how to keep Homebridge working when the machine moves between networks (use the Ciao mDNS advertiser).
+
 ## 0.4.0 (2026-11-04)
 
 - **One tile per AC.** The separate Settings/Modes accessory is gone. Its switches (Display, Beep, Auto Clean, swing axes) now sit inside the AC's tile with the mode toggles, and the old accessory is removed from HomeKit.

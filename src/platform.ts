@@ -12,7 +12,8 @@ import type { Device } from './smartthings/types.js';
 /** Wait before checking again for credentials saved by the settings UI. */
 const NOT_CONNECTED_RECHECK_MS = 60_000;
 const RETRY_MIN_MS = 30_000;
-const RETRY_MAX_MS = 10 * 60_000;
+/** Short enough that the AC comes back soon after the Mac rejoins a network with internet. */
+const RETRY_MAX_MS = 2 * 60_000;
 
 export class PaperclipPlatform implements DynamicPlatformPlugin {
   private readonly config: PaperclipConfig;

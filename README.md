@@ -18,12 +18,12 @@ iPhone / Watch / HomePod ──HomeKit──▶ Homebridge + Paperclip (Mac, Pi�
 
 ## What you get
 
-The AC's page in the Home app follows the Samsung SmartThings app: a temperature dial with **Off / Cool / Auto**, then a **Fan**
-control and the mode toggles right under it (Turbo, Quiet, Sleep, Dry). It's one tile in the room, like a native AC.
+The AC works like its remote: **one power**, a temperature dial with **Off / Cool / Auto**, and a **Fan Speed** control and the
+mode toggles (Turbo, Quiet, Sleep, Dry, Fan Only) inside the same tile. It's one tile in the room, like a native AC.
 
-> Apple fixes the mode menu to Off, Cool, Auto and Heat, for HomeKit and Matter accessories alike. Samsung's **Dry** therefore
-> appears as a toggle under the dial (the menu shows Cool while it runs), and **Fan** mode is what you get when you turn the Fan
-> on while the AC is off.
+> Apple fixes the Home app's AC screen: the mode menu only has Off, Cool, Auto and Heat, fan speed is a slider without names,
+> and the extra controls sit behind the ⚙︎ button. No plugin can change that. Samsung's **Dry** and **Fan** modes are therefore
+> toggles (the menu shows Cool while either runs), and the four Fan Speed steps are Low, Medium, High and Turbo, bottom to top.
 
 | In the Home app | Samsung feature |
 |---|---|
@@ -31,11 +31,11 @@ control and the mode toggles right under it (Turbo, Quiet, Sleep, Dry). It's one
 | Cool · Auto (· Heat on heat pumps) | AC mode, limited to the modes your unit reports |
 | Target temperature | Set point, using your unit's own range (16–30 °C on most models) |
 | Current temperature | Indoor temperature sensor |
-| **Fan** (inside the AC) | Low → Medium → High → Turbo, an **Auto** toggle and **Oscillate**. Fan on while the AC is off = fan-only mode |
+| **Fan Speed** (inside the AC) | Low → Medium → High → Turbo, an **Auto** toggle and **Oscillate**. Its on/off is the AC's power, so it never switches modes |
 | **Filter** (inside the AC) | Filter life left, and an alert when it needs cleaning |
 | Humidity (inside the AC) | Indoor humidity, if the unit measures it |
 | **Turbo**, **Quiet**, **Sleep**, WindFree… | Samsung's optional modes, whichever your unit supports. Only one runs at a time, only while the AC is on, and Turbo only in Cool |
-| **Dry** | Dehumidify. Turning it off returns the AC to its previous mode |
+| **Dry**, **Fan Only** | Dehumidify, or air without cooling. Turning either off returns the AC to its previous mode |
 | Display, Beep, Auto Clean, Swing Up/Down, Swing Left/Right | Optional, off by default, also inside the AC |
 
 Paperclip only adds a control when your AC actually reports it, so you don't get tiles that always say "No Response".
@@ -122,12 +122,12 @@ All of these are in the settings page below the connection steps. Defaults are i
 |---|---|---|
 | `pollInterval` | `20` | Seconds between status refreshes (10–600). Commands are always sent immediately. |
 | `optionalModeSwitches` | all | Samsung modes as switches: `windFree`, `windFreeSleep`, `sleep`, `quiet`, `speed` (Turbo), `smart`, `comfort`, `longWind`. Only supported ones appear. |
-| `fanTile` | `true` | Fan control inside the AC: speed, Auto and Oscillate. |
-| `swingDirectionSwitches` | `false` | Swing Up/Down and Swing Left/Right switches on the Modes accessory. |
+| `fanTile` | `true` | Fan Speed control inside the AC: speed, Auto and Oscillate. |
+| `swingDirectionSwitches` | `false` | Swing Up/Down and Swing Left/Right switches inside the AC. |
 | `filterStatus` | `true` | Filter life and cleaning alert. |
 | `beepSwitch` | `false` | Turn the indoor unit's beep on or off. |
 | `dryModeSwitch` | `true` | Dry (dehumidify) switch. |
-| `fanModeSwitch` | `false` | Fan Only switch. Not needed with the Fan control. |
+| `fanModeSwitch` | `true` | Fan Only (Samsung's Fan mode) switch. |
 | `humiditySensor` | `true` | Humidity sensor tile. |
 | `displaySwitch` | `false` | Indoor unit display light. |
 | `autoCleanSwitch` | `false` | Auto Clean switch. |
@@ -166,8 +166,11 @@ Add `-U <path>` if your Homebridge storage folder isn't `~/.homebridge`.
 | Step 1 says the token is missing permissions | Make a new token with *every* scope ticked, or use the CLI route above. |
 | The tile says "No Response" | SmartThings or your internet was unreachable for three refreshes in a row. It recovers by itself. Check that the AC is online in the SmartThings app. |
 | Changes take a few seconds to show | Paperclip shows your change immediately, then confirms it with SmartThings about 3 s later. Changes made on the remote show up within `pollInterval`. |
+| The AC stops responding after the Homebridge machine switches networks | Set Homebridge's mDNS advertiser to **Ciao** (Homebridge UI → Settings → mDNS Advertiser, or `"advertiser": "ciao"` in the `bridge` block). It re-announces the bridge when the network changes; `bonjour-hap` doesn't and logs `EADDRNOTAVAIL`. HomeKit only reaches the bridge while it shares a network with your home hub. |
+| Safari won't quit while the Homebridge UI is open | The UI's Terminal asks before closing a session you typed in. Add `"terminal": { "hideWarning": true }` to the UI's `config` block to turn that prompt off. |
 | WindFree, Sleep or Turbo turns itself off | Samsung only allows these in some modes (usually Cool), so changing the mode cancels them. Only one can be on at a time. |
-| "Turbo" appears twice | **Turbo switch** = Samsung's fast-cooling mode. **Turbo fan speed** = the top of the Fan tile's slider. They're separate settings on the AC too. |
+| "Turbo" appears twice | **Turbo switch** = Samsung's fast-cooling mode (MAX/Fast in the SmartThings app). **Turbo fan speed** = the top step of Fan Speed. They're separate settings on the AC too. |
+| Where are fan speed and the toggles? | Open the AC, then tap ⚙︎. Apple's AC screen only shows the dial and the mode menu up front. |
 
 Run Homebridge in debug mode (`-D`, or the *Debug* toggle in the UI) to log every SmartThings request.
 
